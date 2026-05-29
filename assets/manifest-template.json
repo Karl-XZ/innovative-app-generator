@@ -1,0 +1,110 @@
+{
+  "system_name": "示例系统名称",
+  "version": "V1.0",
+  "owner": "项目开发团队",
+  "complete_date": "2026年05月29日",
+  "purpose": "一句话说明开发目的",
+  "industry": "所属行业或领域",
+  "user_groups": [
+    "管理员",
+    "业务人员",
+    "终端用户"
+  ],
+  "environments": {
+    "dev_hardware": "AMD64 CPU/16GB内存/50GB磁盘",
+    "run_hardware": "4核CPU/8GB内存/20GB磁盘",
+    "dev_os": "Windows 10/11",
+    "dev_tools": "JDK 21、Node.js、Vite、VS Code",
+    "run_platform": "Windows/macOS/Linux",
+    "support_env": "JDK 21、现代浏览器",
+    "languages": [
+      "Java",
+      "TypeScript",
+      "JavaScript",
+      "HTML",
+      "CSS"
+    ]
+  },
+  "technical_features": [
+    "医疗软件",
+    "人工智能软件"
+  ],
+  "main_functions": [
+    "请改成真实项目功能"
+  ],
+  "modules": [
+    {
+      "id": "overview",
+      "title": "首页综合看板",
+      "menu": "首页",
+      "route": "/",
+      "summary": "模块功能概述",
+      "algorithm": "模块算法原理",
+      "input_output": "输入输出说明",
+      "data_flow": "数据流说明",
+      "special_handling": "边界条件与异常处理",
+      "steps": [
+        "步骤1",
+        "步骤2"
+      ],
+      "screenshot": {
+        "file": "docs/screenshots/01-home.png",
+        "title": "首页综合看板"
+      },
+      "code_refs": [
+        {
+          "file": "src/App.tsx",
+          "title": "首页渲染逻辑",
+          "function_name": "renderOverviewSection",
+          "start_line": 100,
+          "end_line": 180,
+          "explanation": "说明这段代码为什么是核心",
+          "input": "输入参数说明",
+          "output": "输出结果说明",
+          "variables": [
+            {
+              "name": "sample",
+              "meaning": "变量含义",
+              "range": "取值范围"
+            }
+          ],
+          "line_explanations": [
+            {
+              "lines": "100-110",
+              "explanation": "关键逻辑说明"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "exports": [
+    {
+      "name": "patients.csv",
+      "fields": [
+        {
+          "name": "id",
+          "meaning": "主键"
+        }
+      ],
+      "usage": "导出文件如何使用"
+    }
+  ],
+  "faq": [
+    {
+      "problem": "启动失败",
+      "reason": "JDK 未安装",
+      "steps": "检查 java -version",
+      "solution": "安装 JDK 21"
+    }
+  ],
+  "tests": {
+    "built_in": "内置测试说明",
+    "cases": [
+      "测试用例1"
+    ]
+  },
+  "maintenance": {
+    "guide": "维护说明"
+  }
+}

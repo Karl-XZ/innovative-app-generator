@@ -1,0 +1,524 @@
+from __future__ import annotations
+
+import argparse
+import base64
+import html
+import json
+import subprocess
+from pathlib import Path
+
+from docx import Document
+from docx.enum.table import WD_TABLE_ALIGNMENT, WD_CELL_VERTICAL_ALIGNMENT
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
+from docx.shared import Cm, Pt, RGBColor
+
+
+INCLUDE_EXTENSIONS = {
+    ".java", ".kt", ".py", ".js", ".jsx", ".ts", ".tsx", ".css", ".scss", ".less",
+    ".html", ".vue", ".xml", ".properties", ".sql", ".json", ".yaml", ".yml",
+}
+EXCLUDED_DIRS = {
+    ".git", ".idea", ".vscode", "node_modules", "dist", "build", "target", "coverage",
+    "__pycache__", ".next", ".nuxt", "软件著作权申请资料",
+}
+
+
+def read_text(path: Path) -> str:
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def project_line_count(project_root: Path) -> int:
+    total = 0
+    for path in project_root.rglob("*"):
+        if path.is_file() and path.suffix.lower() in INCLUDE_EXTENSIONS:
+            if not any(part in EXCLUDED_DIRS for part in path.relative_to(project_root).parts):
+                total += len(read_text(path).splitlines())
+    return total
+
+
+def data_uri(path: Path) -> str:
+    mime = "image/png"
+    return f"data:{mime};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"
+
+
+def code_slice(project_root: Path, ref: dict) -> tuple[str, str]:
+    file_path = project_root / ref["file"]
+    lines = read_text(file_path).splitlines()
+    start = max(1, int(ref["start_line"]))
+    end = min(len(lines), int(ref["end_line"]))
+    snippet = "\n".join(lines[start - 1:end])
+    return f"{ref['file']}（约第{start}-{end}行）", snippet
+
+
+def esc(text: str) -> str:
+    return html.escape(text or "")
+
+
+def html_table(headers: list[str], rows: list[list[str]]) -> str:
+    head = "".join(f"<th>{esc(h)}</th>" for h in headers)
+    body = "".join("<tr>" + "".join(f"<td>{esc(c)}</td>" for c in row) + "</tr>" for row in rows)
+    return f"<table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
+
+
+def add_border(cell) -> None:
+    tc_pr = cell._tc.get_or_add_tcPr()
+    borders = OxmlElement("w:tcBorders")
+    for edge in ("top", "left", "bottom", "right"):
+        border = OxmlElement(f"w:{edge}")
+        border.set(qn("w:val"), "single")
+        border.set(qn("w:sz"), "8")
+        border.set(qn("w:color"), "C8D3E6")
+        borders.append(border)
+    tc_pr.append(borders)
+
+
+def set_font(run, size: float, bold: bool = False, font_name: str = "SimSun") -> None:
+    run.font.name = font_name
+    run._element.rPr.rFonts.set(qn("w:eastAsia"), font_name)
+    run.font.size = Pt(size)
+    run.bold = bold
+
+
+def set_body_paragraph(paragraph) -> None:
+    fmt = paragraph.paragraph_format
+    fmt.first_line_indent = Cm(0.74)
+    fmt.space_before = Pt(0)
+    fmt.space_after = Pt(0)
+    fmt.line_spacing = 1.5
+
+
+def build_html(project_root: Path, manifest: dict, output_path: Path) -> None:
+    system_name = manifest["system_name"]
+    version = manifest.get("version", "V1.0")
+    env = manifest["environments"]
+    total_lines = project_line_count(project_root)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    env_rows = [
+        ["开发该软件的硬件环境", env.get("dev_hardware", "")],
+        ["运行的硬件环境", env.get("run_hardware", "")],
+        ["开发该软件的操作系统", env.get("dev_os", "")],
+        ["软件开发环境/开发工具", env.get("dev_tools", "")],
+        ["该软件的运行平台/操作系统", env.get("run_platform", "")],
+        ["软件运行支撑环境/支持软件", env.get("support_env", "")],
+        ["编程语言", "、".join(env.get("languages", []))],
+        ["代码行数", str(total_lines)],
+        ["开发目的", manifest.get("purpose", "")],
+        ["面向领域/行业", manifest.get("industry", "")],
+        ["软件的主要功能", "；".join(manifest.get("main_functions", []))],
+        ["软件的技术特点", "、".join(manifest.get("technical_features", []))],
+    ]
+
+    operation_modules = []
+    detail_modules = []
+    for index, module in enumerate(manifest.get("modules", []), start=1):
+        screenshot_html = ""
+        shot = module.get("screenshot") or {}
+        if shot.get("file"):
+            shot_path = project_root / shot["file"]
+            if shot_path.exists():
+                screenshot_html = (
+                    f"<div class='figure'><img src='{data_uri(shot_path)}' alt='{esc(shot.get('title', module['title']))}'>"
+                    f"<div class='figcaption'>图4-{index} {esc(shot.get('title', module['title']))}</div>"
+                    f"</div>"
+                )
+        steps_html = "".join(f"<li>{esc(step)}</li>" for step in module.get("steps", []))
+        operation_modules.append(
+            f"<section class='module'><h3>4.{index} {esc(module['title'])}</h3>"
+            f"<div class='meta'>菜单：{esc(module.get('menu', ''))}　页面路径：{esc(module.get('route', ''))}</div>"
+            f"<ol>{steps_html}</ol>{screenshot_html}</section>"
+        )
+
+        refs_html = []
+        for ref_index, ref in enumerate(module.get("code_refs", []), start=1):
+            ref_label, snippet = code_slice(project_root, ref)
+            variables = ref.get("variables", [])
+            line_explanations = ref.get("line_explanations", [])
+            vars_html = ""
+            if variables:
+                vars_html = html_table(
+                    ["变量名", "含义", "取值范围"],
+                    [[item.get("name", ""), item.get("meaning", ""), item.get("range", "")] for item in variables],
+                )
+            line_html = ""
+            if line_explanations:
+                line_html = "<ul>" + "".join(
+                    f"<li><strong>{esc(item.get('lines', ''))}</strong>：{esc(item.get('explanation', ''))}</li>"
+                    for item in line_explanations
+                ) + "</ul>"
+            refs_html.append(
+                f"<div class='code-card'><h4>5.{index}.{ref_index} {esc(ref.get('title', ref.get('function_name', '核心代码')))}</h4>"
+                f"<div class='meta'>{esc(ref_label)}　函数：{esc(ref.get('function_name', ''))}</div>"
+                f"<div class='note'>{esc(ref.get('explanation', ''))}</div>"
+                f"<pre><code>{esc(snippet)}</code></pre>"
+                f"<p><strong>输入：</strong>{esc(ref.get('input', ''))}</p>"
+                f"<p><strong>输出：</strong>{esc(ref.get('output', ''))}</p>"
+                f"{vars_html}"
+                f"<div class='tip'><strong>逐行解释：</strong>{line_html or '未提供逐行解释，需在项目生成阶段补充。'}</div>"
+                f"</div>"
+            )
+
+        detail_modules.append(
+            f"<section class='module'><h3>5.{index} {esc(module['title'])}</h3>"
+            f"<p><strong>功能概述：</strong>{esc(module.get('summary', ''))}</p>"
+            f"<p><strong>算法原理：</strong>{esc(module.get('algorithm', ''))}</p>"
+            f"<p><strong>输入输出说明：</strong>{esc(module.get('input_output', ''))}</p>"
+            f"<p><strong>数据流：</strong>{esc(module.get('data_flow', ''))}</p>"
+            f"<p><strong>特殊处理：</strong>{esc(module.get('special_handling', ''))}</p>"
+            f"{''.join(refs_html)}</section>"
+        )
+
+    export_rows = []
+    for item in manifest.get("exports", []):
+        export_rows.append([item.get("name", ""), "；".join(f"{f.get('name', '')}:{f.get('meaning', '')}" for f in item.get("fields", [])), item.get("usage", "")])
+    faq_rows = [[item.get("problem", ""), item.get("reason", ""), item.get("steps", ""), item.get("solution", "")] for item in manifest.get("faq", [])]
+
+    html_doc = f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{esc(system_name)} 详细使用说明书</title>
+  <style>
+    body {{ font-family: "SimSun", serif; margin: 0; background: #f5f8fc; color: #203040; }}
+    .page {{ max-width: 1080px; margin: 0 auto; padding: 40px 32px 80px; }}
+    h1,h2,h3,h4 {{ color: #1d3354; }}
+    h1 {{ text-align: center; font-size: 34px; margin: 12px 0 6px; }}
+    .subtitle {{ text-align:center; font-size: 18px; margin-bottom: 24px; color:#4a6283; }}
+    section {{ background: white; border: 1px solid #d6e0ee; border-radius: 18px; padding: 24px; margin: 18px 0; box-shadow: 0 12px 30px rgba(31, 65, 114, 0.08); }}
+    table {{ width:100%; border-collapse: collapse; margin: 12px 0; }}
+    th,td {{ border: 1px solid #c8d3e6; padding: 10px 12px; vertical-align: top; font-size: 15px; }}
+    th {{ background: #eef4ff; }}
+    pre {{ background: #0f172a; color: #e5eefc; padding: 16px; border-radius: 14px; overflow:auto; font-family: Consolas, "Courier New", monospace; font-size: 13px; line-height: 1.55; }}
+    .note, .tip, .warning {{ border-radius: 12px; padding: 14px 16px; margin: 14px 0; }}
+    .note {{ background: #eef5ff; border-left: 4px solid #6aa0ff; }}
+    .tip {{ background: #eefbf7; border-left: 4px solid #37b68f; }}
+    .warning {{ background: #fff4ea; border-left: 4px solid #ff9a45; }}
+    .meta {{ color:#5b6f8b; font-size: 14px; margin: 8px 0 12px; }}
+    .figure img {{ width:100%; border:1px solid #d9e4f2; border-radius: 14px; }}
+    .figcaption {{ text-align:center; font-size:14px; margin-top:8px; color:#516882; }}
+    .module + .module {{ margin-top: 20px; }}
+    footer {{ text-align:center; color:#62758e; font-size:14px; margin-top:32px; }}
+  </style>
+</head>
+<body>
+  <div class="page">
+    <h1>{esc(system_name)} 详细使用说明书</h1>
+    <div class="subtitle">{esc(system_name)} {esc(version)}</div>
+
+    <section>
+      <h2>1. 系统简介</h2>
+      <p><strong>系统定位：</strong>{esc(manifest.get("purpose", ""))}</p>
+      <p><strong>面向用户群体：</strong>{esc("、".join(manifest.get("user_groups", [])))}</p>
+      <p><strong>总体架构：</strong>{esc(manifest.get("architecture", "前后端分离 B/S 架构，前端负责界面与交互，后端负责业务逻辑、接口与数据输出。"))}</p>
+      <p><strong>技术特点：</strong>{esc("、".join(manifest.get("technical_features", [])))}</p>
+      <p><strong>版本信息：</strong>{esc(version)}　<strong>开发完成日期：</strong>{esc(manifest.get("complete_date", ""))}　<strong>代码行数：</strong>{total_lines}</p>
+    </section>
+
+    <section>
+      <h2>2. 系统运行环境要求</h2>
+      {html_table(["项目", "内容"], env_rows)}
+    </section>
+
+    <section>
+      <h2>3. 系统安装与启动</h2>
+      <ol>
+        <li>获取项目源代码，进入项目根目录。</li>
+        <li>若项目包含前端工程，执行 <code>npm install</code> 安装前端依赖。</li>
+        <li>若项目包含 Java 后端，执行 <code>java -version</code> 检查 JDK 环境，并按照项目脚本启动。</li>
+        <li>前端开发态通常使用 <code>npm run dev</code>，打包后使用 <code>npm run build</code> 与后端静态托管配合运行。</li>
+        <li>首次启动后访问本地地址，进入系统首页。</li>
+      </ol>
+      <div class="warning">注意：若系统使用固定端口、环境变量或本地文件路径，请先按项目 README 与脚本说明完成配置后再启动。</div>
+    </section>
+
+    <section>
+      <h2>4. 系统操作指南与系统的详细操作步骤</h2>
+      {''.join(operation_modules)}
+    </section>
+
+    <section>
+      <h2>5. 功能模块详解与对应主程序段</h2>
+      {''.join(detail_modules)}
+    </section>
+
+    <section>
+      <h2>6. 数据管理与导出</h2>
+      <p>系统数据可通过接口或本地导出逻辑输出为结构化文件，用于后续统计、审计和归档。</p>
+      {html_table(["导出文件", "字段说明", "使用方式"], export_rows or [["未配置", "待项目生成阶段补充", "待补充"]])}
+    </section>
+
+    <section>
+      <h2>7. 常见问题与故障排除</h2>
+      {html_table(["问题现象", "可能原因", "排查步骤", "解决方案"], faq_rows or [["启动失败", "环境未安装", "检查运行时版本", "按环境要求重新安装"], ["按钮无响应", "前端脚本异常", "检查浏览器控制台", "修复脚本并重启"], ["结果异常", "规则参数配置不正确", "检查算法输入与阈值", "调整规则参数"], ["导出失败", "无写入权限或路径错误", "检查输出目录", "修正目录权限"], ["界面错位", "样式未加载完整", "检查静态资源请求", "重新构建前端资源"]])}
+    </section>
+
+    <section>
+      <h2>8. 测试与维护</h2>
+      <p><strong>内置测试：</strong>{esc(manifest.get("tests", {}).get("built_in", "请结合项目中的测试脚本、健康检查接口或自检程序执行测试。"))}</p>
+      <div class="note">测试用例：{esc("；".join(manifest.get("tests", {}).get("cases", [])))}</div>
+      <p><strong>系统维护指南：</strong>{esc(manifest.get("maintenance", {}).get("guide", "维护时应同步更新业务规则、界面文案、截图与 manifest 中的代码引用信息。"))}</p>
+    </section>
+
+    <footer>版权信息：{esc(system_name)} 软件著作权鉴定材料</footer>
+  </div>
+</body>
+</html>"""
+    output_path.write_text(html_doc, encoding="utf-8")
+
+
+def fill_cell_text(cell, text: str, bold: bool = False, size: float = 12) -> None:
+    cell.text = ""
+    paragraph = cell.paragraphs[0]
+    run = paragraph.add_run(text)
+    set_font(run, size, bold=bold)
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+    add_border(cell)
+
+
+def add_title(doc: Document, text: str) -> None:
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = p.add_run(text)
+    set_font(run, 18, bold=True)
+
+
+def add_heading(doc: Document, level: int, text: str) -> None:
+    p = doc.add_paragraph()
+    fmt = p.paragraph_format
+    fmt.space_before = Pt(8)
+    fmt.space_after = Pt(8)
+    run = p.add_run(text)
+    set_font(run, 14 if level == 1 else 13, bold=True)
+
+
+def add_body(doc: Document, text: str) -> None:
+    p = doc.add_paragraph()
+    set_body_paragraph(p)
+    run = p.add_run(text)
+    set_font(run, 12)
+
+
+def add_code(doc: Document, label: str, code: str) -> None:
+    p = doc.add_paragraph()
+    fmt = p.paragraph_format
+    fmt.space_before = Pt(0)
+    fmt.space_after = Pt(0)
+    run = p.add_run(label + "\n" + code)
+    set_font(run, 9.5, font_name="Courier New")
+
+
+def convert_docx_to_pdf(docx_path: Path, pdf_path: Path) -> bool:
+    escaped_docx = str(docx_path).replace("'", "''")
+    escaped_pdf = str(pdf_path).replace("'", "''")
+    script = (
+        "$ErrorActionPreference='Stop';"
+        "$word=New-Object -ComObject Word.Application;"
+        "$word.Visible=$false;"
+        f"$doc=$word.Documents.Open('{escaped_docx}');"
+        f"$doc.SaveAs([ref]'{escaped_pdf}', [ref]17);"
+        "$doc.Close();"
+        "$word.Quit();"
+    )
+    try:
+        subprocess.run(
+            ["powershell", "-NoProfile", "-Command", script],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return True
+    except subprocess.CalledProcessError:
+        return False
+
+
+def build_docx(project_root: Path, manifest: dict, output_path: Path) -> None:
+    system_name = manifest["system_name"]
+    version = manifest.get("version", "V1.0")
+    env = manifest["environments"]
+    total_lines = project_line_count(project_root)
+
+    doc = Document()
+    section = doc.sections[0]
+    section.top_margin = Cm(2.4)
+    section.bottom_margin = Cm(2.2)
+    section.left_margin = Cm(2.4)
+    section.right_margin = Cm(2.2)
+    normal = doc.styles["Normal"]
+    normal.font.name = "SimSun"
+    normal._element.rPr.rFonts.set(qn("w:eastAsia"), "SimSun")
+    normal.font.size = Pt(12)
+
+    add_title(doc, f"{system_name} 详细使用说明书")
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = p.add_run(f"{system_name} {version}")
+    set_font(run, 13)
+
+    add_heading(doc, 1, "1. 系统简介")
+    add_body(doc, f"系统定位：{manifest.get('purpose', '')}")
+    add_body(doc, f"面向用户群体：{'、'.join(manifest.get('user_groups', []))}")
+    add_body(doc, f"总体架构：{manifest.get('architecture', '前后端分离 B/S 架构，前端负责界面与交互，后端负责业务逻辑、接口与数据输出。')}")
+    add_body(doc, f"技术特点：{'、'.join(manifest.get('technical_features', []))}")
+    add_body(doc, f"版本信息：{version}；开发完成日期：{manifest.get('complete_date', '')}；代码行数：{total_lines}")
+
+    add_heading(doc, 1, "2. 系统运行环境要求")
+    env_rows = [
+        ("开发该软件的硬件环境", env.get("dev_hardware", "")),
+        ("运行的硬件环境", env.get("run_hardware", "")),
+        ("开发该软件的操作系统", env.get("dev_os", "")),
+        ("软件开发环境/开发工具", env.get("dev_tools", "")),
+        ("该软件的运行平台/操作系统", env.get("run_platform", "")),
+        ("软件运行支撑环境/支持软件", env.get("support_env", "")),
+        ("编程语言", "、".join(env.get("languages", []))),
+        ("代码行数", str(total_lines)),
+        ("开发目的", manifest.get("purpose", "")),
+        ("面向领域/行业", manifest.get("industry", "")),
+        ("软件的主要功能", "；".join(manifest.get("main_functions", []))),
+        ("软件的技术特点", "、".join(manifest.get("technical_features", []))),
+    ]
+    table = doc.add_table(rows=1, cols=2)
+    table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    table.autofit = False
+    fill_cell_text(table.rows[0].cells[0], "项目", bold=True)
+    fill_cell_text(table.rows[0].cells[1], "内容", bold=True)
+    for left, right in env_rows:
+        row = table.add_row().cells
+        fill_cell_text(row[0], left)
+        fill_cell_text(row[1], right)
+
+    add_heading(doc, 1, "3. 系统安装与启动")
+    for step in [
+        "获取项目源代码，进入项目根目录。",
+        "若项目包含前端工程，执行 npm install 安装前端依赖。",
+        "若项目包含 Java 后端，检查 JDK 环境并按照项目脚本启动。",
+        "前端开发态通常使用 npm run dev，打包后使用 npm run build。",
+        "访问本地地址进入系统首页。",
+    ]:
+        add_body(doc, step)
+
+    add_heading(doc, 1, "4. 系统操作指南与系统的详细操作步骤")
+    for index, module in enumerate(manifest.get("modules", []), start=1):
+        add_heading(doc, 2, f"4.{index} {module['title']}")
+        add_body(doc, f"菜单：{module.get('menu', '')}；页面路径：{module.get('route', '')}")
+        for step_index, step in enumerate(module.get("steps", []), start=1):
+            add_body(doc, f"第{step_index}步：{step}")
+        shot = module.get("screenshot") or {}
+        if shot.get("file"):
+            shot_path = project_root / shot["file"]
+            if shot_path.exists():
+                doc.add_picture(str(shot_path), width=Cm(15.8))
+                caption = doc.add_paragraph()
+                caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                run = caption.add_run(f"图4-{index} {shot.get('title', module['title'])}")
+                set_font(run, 10.5)
+
+    add_heading(doc, 1, "5. 功能模块详解与对应主程序段")
+    for index, module in enumerate(manifest.get("modules", []), start=1):
+        add_heading(doc, 2, f"5.{index} {module['title']}")
+        add_body(doc, f"功能概述：{module.get('summary', '')}")
+        add_body(doc, f"算法原理：{module.get('algorithm', '')}")
+        add_body(doc, f"输入输出说明：{module.get('input_output', '')}")
+        add_body(doc, f"数据流：{module.get('data_flow', '')}")
+        add_body(doc, f"特殊处理：{module.get('special_handling', '')}")
+
+        for ref_index, ref in enumerate(module.get("code_refs", []), start=1):
+            label, snippet = code_slice(project_root, ref)
+            add_heading(doc, 2, f"5.{index}.{ref_index} {ref.get('title', ref.get('function_name', '核心代码'))}")
+            add_body(doc, f"源代码位置：{label}")
+            add_body(doc, f"函数名：{ref.get('function_name', '')}")
+            add_body(doc, f"说明：{ref.get('explanation', '')}")
+            add_code(doc, "核心代码段：", snippet)
+            add_body(doc, f"输入：{ref.get('input', '')}")
+            add_body(doc, f"输出：{ref.get('output', '')}")
+            if ref.get("variables"):
+                var_table = doc.add_table(rows=1, cols=3)
+                fill_cell_text(var_table.rows[0].cells[0], "变量名", bold=True)
+                fill_cell_text(var_table.rows[0].cells[1], "含义", bold=True)
+                fill_cell_text(var_table.rows[0].cells[2], "取值范围", bold=True)
+                for item in ref["variables"]:
+                    row = var_table.add_row().cells
+                    fill_cell_text(row[0], item.get("name", ""))
+                    fill_cell_text(row[1], item.get("meaning", ""))
+                    fill_cell_text(row[2], item.get("range", ""))
+            for item in ref.get("line_explanations", []):
+                add_body(doc, f"{item.get('lines', '')}：{item.get('explanation', '')}")
+
+    add_heading(doc, 1, "6. 数据管理与导出")
+    export_table = doc.add_table(rows=1, cols=3)
+    fill_cell_text(export_table.rows[0].cells[0], "导出文件", bold=True)
+    fill_cell_text(export_table.rows[0].cells[1], "字段说明", bold=True)
+    fill_cell_text(export_table.rows[0].cells[2], "使用方式", bold=True)
+    for item in manifest.get("exports", []):
+        row = export_table.add_row().cells
+        fill_cell_text(row[0], item.get("name", ""))
+        fill_cell_text(row[1], "；".join(f"{f.get('name', '')}:{f.get('meaning', '')}" for f in item.get("fields", [])))
+        fill_cell_text(row[2], item.get("usage", ""))
+
+    add_heading(doc, 1, "7. 常见问题与故障排除")
+    faq_table = doc.add_table(rows=1, cols=4)
+    for idx, title in enumerate(["问题现象", "可能原因", "排查步骤", "解决方案"]):
+        fill_cell_text(faq_table.rows[0].cells[idx], title, bold=True)
+    faq_items = manifest.get("faq", []) or [
+        {"problem": "启动失败", "reason": "环境未安装", "steps": "检查运行时版本", "solution": "安装依赖环境"},
+        {"problem": "按钮无响应", "reason": "脚本异常", "steps": "检查浏览器控制台", "solution": "修复脚本并重启"},
+        {"problem": "结果异常", "reason": "输入数据不完整", "steps": "核对输入与阈值", "solution": "修正参数"},
+        {"problem": "导出失败", "reason": "目录无权限", "steps": "检查输出目录", "solution": "修正权限"},
+        {"problem": "界面错位", "reason": "样式未正确加载", "steps": "检查静态资源", "solution": "重新构建资源"},
+    ]
+    for item in faq_items:
+        row = faq_table.add_row().cells
+        fill_cell_text(row[0], item.get("problem", ""))
+        fill_cell_text(row[1], item.get("reason", ""))
+        fill_cell_text(row[2], item.get("steps", ""))
+        fill_cell_text(row[3], item.get("solution", ""))
+
+    add_heading(doc, 1, "8. 测试与维护")
+    add_body(doc, f"内置测试：{manifest.get('tests', {}).get('built_in', '请结合项目中的测试脚本、健康检查接口或自检程序执行测试。')}")
+    add_body(doc, f"测试用例：{'；'.join(manifest.get('tests', {}).get('cases', []))}")
+    add_body(doc, f"系统维护指南：{manifest.get('maintenance', {}).get('guide', '维护时应同步更新业务规则、界面文案、截图与 manifest 中的代码引用信息。')}")
+
+    footer = doc.sections[0].footer.paragraphs[0]
+    footer.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = footer.add_run(f"版权信息：{system_name} 软件著作权鉴定材料")
+    set_font(run, 10.5)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(output_path)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Generate HTML and DOCX software copyright manual from manifest.")
+    parser.add_argument("--project", required=True, help="Project root path")
+    parser.add_argument("--manifest", required=True, help="Manifest JSON path")
+    parser.add_argument("--output-root", help="Output directory, defaults to <project>/软件著作权申请资料/正式资料")
+    parser.add_argument("--skip-pdf", action="store_true", help="Do not emit PDF for the manual")
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    project_root = Path(args.project).resolve()
+    manifest_path = Path(args.manifest).resolve()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    output_root = Path(args.output_root).resolve() if args.output_root else project_root / "软件著作权申请资料" / "正式资料"
+    system_name = manifest["system_name"]
+
+    html_out = output_root / f"{system_name}_软件著作权鉴定材料.html"
+    docx_out = output_root / f"{system_name}_软件著作权鉴定材料.docx"
+    pdf_out = output_root / f"{system_name}_软件著作权鉴定材料.pdf"
+    build_html(project_root, manifest, html_out)
+    build_docx(project_root, manifest, docx_out)
+    pdf_created = False
+    if not args.skip_pdf:
+        pdf_created = convert_docx_to_pdf(docx_out, pdf_out)
+    print(f"HTML={html_out}")
+    print(f"DOCX={docx_out}")
+    print(f"PDF={pdf_out if pdf_created else 'NOT_CREATED'}")
+
+
+if __name__ == "__main__":
+    main()
