@@ -1,304 +1,394 @@
 ---
 name: innovative-app-generator
-description: "Create a complete innovative software project and immediately generate the full software copyright package without stopping: project body, screenshots, HTML and Word manual, one combined front-30-plus-back-30 code document in DOCX and PDF, a full-code Word document when code exceeds 60 pages, and application info."
+description: "一键生成可申请中国软件著作权的创新软件项目，并连续完成项目本体、截图、申请信息、代码材料和手册产物。适用于用户只提供软件名称和可选要求，希望不中断地直接产出完整项目与五个标准交付物的场景。"
 ---
 
-# Innovative App Generator
+# 创新应用一键生成器
 
-## Overview
+## 概述
 
-This skill merges three capabilities into one uninterrupted workflow:
+这个 skill 把三类能力合并成一条不中断的工作流：
 
-- innovative app project generation
-- software copyright HTML and Word manual generation
-- software copyright code-material generation
+- 创新项目生成
+- 软著手册生成
+- 软著代码材料生成
 
-The user input is intentionally simple:
+用户输入应尽量简单：
 
-- required: software name
-- optional: requirements
+- 必填：软件名称
+- 可选：补充要求
 
-The output is intentionally complete:
+输出必须完整：
 
-- project body
-- screenshots
-- software copyright identification manual in HTML
-- software copyright identification manual in DOCX
-- software copyright identification manual in PDF
-- one combined code material DOCX containing front 30 pages and back 30 pages
-- one combined code material PDF containing front 30 pages and back 30 pages
-- one full-code Word document when the total code listing exceeds 60 pages
-- application info text file
+- 项目本体
+- 项目截图
+- 一份申请信息 TXT
+- 一份完整代码 Word
+- 一份前 30 页加后 30 页的代码 PDF
+- 一份手册 DOCX
+- 一份手册 PDF
 
-## When To Use
+最终打包交付目录内只允许出现这 5 个面向用户的文件：
 
-Use this skill for requests like:
+- `XXX.txt`
+- `XXX代码（完整版）.docx`
+- `XXX代码（60页）.pdf`
+- `XXX手册.docx`
+- `XXX手册.pdf`
 
-- “给我做一个可申请软著的创新系统，名字是 XXX”
+审计截图、文本抽取文件、HTML 中间件、重复命名文件、校验报告、临时文件，必须放在其他目录，不能混进最终打包目录。
+
+## 何时使用
+
+适用于这类请求：
+
+- “帮我做一个可申请软著的创新系统，名字叫 XXX”
 - “输入名称和要求，一键生成项目和全部软著材料”
 - “不要中间停，直接做完项目、截图、说明书和代码材料”
 
-Do not use this skill when the user only wants one artifact, such as:
+不适用于只想要单一产物的情况，例如：
 
-- only code materials
-- only HTML manual
-- only screenshots
-- only a project scaffold
+- 只要代码材料
+- 只要 HTML 手册
+- 只要截图
+- 只要项目脚手架
 
-Those can use smaller specialized skills instead.
+这些场景应改用更小的专用 skill。
 
-## Non-Stop Rule
+## 不中断规则
 
-This skill is explicitly non-interrupting.
+这个 skill 明确要求不中断执行：
 
-- Do not stop for confirmations after the user gives the software name and optional requirements.
-- Make reasonable defaults when details are missing.
-- Only ask the user a question if the request is impossible to execute safely without one.
+- 用户给出软件名称和可选要求后，不得再为了常规细节停下来确认。
+- 细节不全时应做合理默认。
+- 只有在缺少关键信息且无法安全执行时，才允许提问。
 
-## Documentation Quality Red Line
+## 文档质量红线
 
-When writing the software copyright manual or any usage document:
+在编写软著手册或其他使用文档时：
 
-- Absolutely forbid hard-coded repeated content presented as module-specific explanation.
-- Do not reuse one generic paragraph for multiple modules and pretend it is “逐行解释”, “输入输出说明”, “数据流”, or “特殊处理”.
-- Every module’s explanation must be written against its own real code path, conditions, thresholds, field mappings, return values, and UI behavior.
-- If a section still reads like a reusable template after the code references are inserted, it is not acceptable and must be rewritten before delivery.
-- Do not add overly self-conscious authenticity statements such as explaining that the environment table is “real”, “not templated”, or “not copied from unrelated projects”. If the content is correct, let the deliverable speak for itself.
-- Keep core code excerpts tight. Do not dump long consecutive blocks that run for two or three pages when a smaller excerpt can prove the module. Select only the minimum core segment that demonstrates the real logic, key conditions, thresholds, mappings, and return construction.
+- 绝对禁止用硬编码重复内容冒充模块解释。
+- 不得把同一段泛化话术换个标题后贴到多个模块里，假装是“逐行解释”“输入输出说明”“数据流”“特殊处理”。
+- 每个模块的解释必须对应它自己的真实代码路径、条件分支、阈值、字段映射、返回值和界面行为。
+- 如果插入代码引用后，整段内容仍然像可复用模板，则该段不合格，必须重写。
+- 不得写“本表来自真实项目”“不是模板”“不是复制来的”这类刻意自证清白的话。
+- 核心代码节选必须短而准，不得在手册里塞连续两三页的大段代码。
+- 手册和代码文档必须统一使用一种正文字体，不得混用花体、斜体或明显不同的代码字体。
 
-## Originality Red Line
+## 原创性红线
 
-This skill must not imitate, lightly reskin, or structurally mirror an existing project.
+这个 skill 严禁模仿、轻度换皮或结构性复用既有项目：
 
-- Do not clone an existing business system and only change names, colors, icons, or field text.
-- Do not reuse another generated project as the main implementation template when that would keep the same module structure, code organization, page composition, or business logic skeleton.
-- Do not treat "same UI shell, different industry wording" as acceptable innovation.
-- The generated system must contain its own domain-specific rules, algorithms, data structures, and interaction flows that are native to the requested scenario.
+- 不得直接克隆一个已有业务系统，只改名称、颜色、图标或字段文案。
+- 不得复用另一个已生成项目的主骨架，导致模块结构、代码组织、页面构成或业务逻辑骨架基本不变。
+- 不得把“同一套后台壳、只换行业文案”当作创新项目。
+- 不得以任何已有本地项目、历史生成项目或现成业务项目作为实现底稿、主骨架或代码起点。
+- 生成系统必须具备与目标场景强相关的规则、算法、数据结构和交互流程。
 
-If the current implementation path shows high similarity to an existing project, the project is considered invalid for this skill.
+一旦发现当前实现路径与已有项目相似度过高：
 
-- High similarity means the code structure, page composition, business flow, or core logic is substantially the same as an existing project even if names were changed.
-- When high similarity is detected, the current project must be abandoned and rebuilt with a new architecture, new core modules, and new business logic.
-- Do not continue polishing, documenting, or packaging a high-similarity project for software copyright use.
+- 该项目直接判定无效。
+- 只要发现是从已有项目出发改造，而不是从零构建当前目标系统，也直接判定无效。
+- 必须废弃当前方案并重做。
+- 不得继续包装、润色、出截图或出软著材料。
 
-Originality is a hard gate, not a documentation exercise.
+原创性是硬门禁，不是靠文档修饰解决的问题。
 
-## Default Technical Baseline
+## 默认技术基线
 
-Unless the user explicitly says otherwise, build the project as:
+除非用户明确指定其他技术路线，否则默认按以下基线实现：
 
-- backend: Java 21
-- frontend: React + TypeScript + Vite
-- runtime shape: B/S architecture
-- styling: polished, intentional, not generic dashboard slop
-- documentation scope: whole project, not backend-only
+- 后端：Java 21
+- 前端：React + TypeScript + Vite
+- 运行形态：B/S 架构
+- 视觉要求：精致、明确、有设计感，不能是随手拼的通用后台
+- 文档范围：整个项目，不是只看后端
 
-## Required Project Outputs
+## UI 参考图一致性规则
 
-Inside the generated project, always create these:
+当用户提供参考截图或明确指定目标 UI 示例时：
+
+- 最终界面必须在整体结构、布局节奏、间距、卡片位置、顶栏与侧栏构成、字体层级和视觉密度上高保真贴近参考图。
+- 不能只做到“气质差不多”或“颜色像”。
+- 如果结果明显偏离参考图，必须继续重做，直到它能被识别为同一目标构图改成对应业务领域后的版本。
+- 截图质检时，必须把产出界面和参考图直接对比，而不是只做一般 UI 检查。
+
+## AI 概念参考图规则
+
+在正式实现项目前，必须先生成一张 AI 概念参考图，用于锁定：
+
+- 页面整体构图
+- 模块分区关系
+- 视觉风格方向
+- 业务内容如何映射到界面卡片与区域
+
+这张 AI 概念参考图不是最终交付物，但必须作为前置设计约束存在。后续正式界面应同时对齐：
+
+- 用户给定的参考图
+- 生成出的 AI 概念参考图
+
+不得跳过这一步直接编码。
+
+## 单屏可读性规则
+
+前端界面应尽量控制在单个常规屏幕首屏即可完整阅读的范围内：
+
+- 一级页面不要做成过长的瀑布流式堆叠页面
+- 主要信息、主要操作按钮、核心图表和关键表格区域应尽量在一个屏幕内完成展示
+- 若业务内容较多，应优先通过分栏、分页、选项卡、折叠区或二级页面拆分，而不是无限向下堆内容
+- 截图目标页面应尽量做到“单屏即可看清完整核心界面”，避免必须依赖超长整页截图才能说明功能
+- 若某页明显过长，导致首屏无法体现完整核心结构，则应先调整页面布局，再进入截图阶段
+
+## 项目内必须生成的内容
+
+在项目目录内，始终创建这些内容：
 
 - `docs/需求文档.md`
 - `docs/TODO.md`
-- `softcopyright-manifest.json`
-- runnable project source
-- screenshot output directory
+- `softcopyright-manifest.json`（由 skill 自动创建并持续补齐）
+- 可运行的项目源码
+- 截图输出目录
 - `软件著作权申请资料/正式资料`
 
-The manifest file is mandatory because the manual and copyright bundle scripts rely on it.
+`softcopyright-manifest.json` 是内部契约文件，用于驱动手册和打包脚本。用户不应被要求手工编写或手工补齐它。
 
-## Manifest Rule
+## Manifest 规则
 
-Always create and maintain `softcopyright-manifest.json` while implementing the app.
+实现过程中必须自动创建并维护 `softcopyright-manifest.json`。
 
-The manifest must contain:
+manifest 至少要包含：
 
-- software name
-- version
-- owner
-- purpose
-- industry
-- user groups
-- environment fields
-- module list
-- screenshot mapping
-- code references for each major module
-- export/data/test/maintenance notes
+- 软件名称
+- 版本号
+- 著作权人或归属口径
+- 开发目的
+- 所属行业
+- 用户群体
+- 环境字段
+- 模块清单
+- 截图映射
+- 每个核心模块对应的代码引用
+- 导出说明
+- 测试说明
+- 维护说明
 
-Use [references/manifest-schema.md](references/manifest-schema.md) and [assets/manifest-template.json](assets/manifest-template.json) as the contract.
+使用 [references/manifest-schema.md](references/manifest-schema.md) 和 [assets/manifest-template.json](assets/manifest-template.json) 作为内部约束。若 manifest 缺失或字段不完整，skill 必须自动从真实代码和项目结构中回填，而不是要求用户手动处理。
 
-## Workflow
+## 工作流
 
-### 1. Create the project
+### 1. 创建项目
 
-Create a new project folder named after the software title in the current workspace unless the user gives a path.
+除非用户指定路径，否则在当前工作区内按软件名称创建新项目目录。
 
-Immediately write:
+立即生成：
 
 - `docs/需求文档.md`
 - `docs/TODO.md`
 
-The product must be innovative enough for later software copyright filing:
+项目必须具备可用于后续软著申报的创新性：
 
-- do not produce a thin CRUD-only shell
-- include at least 3 domain-specific rules, algorithms, or coordination mechanisms
-- make the UI complete enough to support screenshots and operation-flow documentation
-- do not derive the implementation by directly imitating an existing local project
+- 不能只是一个薄薄的 CRUD 壳
+- 至少包含 3 个与业务场景强相关的规则、算法或协同机制
+- UI 必须完整到足以支持截图和操作流说明
+- 不得直接仿造本地已有项目
 
-### 2. Implement the project fully
+### 2. 完整实现项目
 
-Build the runnable project end-to-end in the same turn.
+在同一轮内把项目做成可运行版本。
 
-Implementation expectations:
+实现要求：
 
-- all primary pages and modules exist
-- the app can run locally
-- the app has stable UI text and stable navigation
-- the app includes clear source files for major modules
+- 所有主要页面和一级模块都存在
+- 项目能本地运行
+- 页面文案和导航稳定
+- 核心模块有清晰可引用的源码文件
 
-While implementing, update `softcopyright-manifest.json` so it reflects the actual codebase rather than a wish list.
+实现过程中必须同步更新 `softcopyright-manifest.json`，保证它反映当前真实代码，而不是先写愿景再慢慢对齐。
 
-Also run an originality check during implementation:
+同时在实现阶段先做一次原创性检查：
 
-- compare the planned architecture and core modules against nearby local projects when relevant
-- if similarity is high, discard the current direction and rebuild before continuing
-- only proceed to screenshots and copyright materials after the project passes this originality gate
+- 将拟定架构和核心模块与附近已有项目比较
+- 若相似度高，立刻放弃当前方案并重做
+- 只有通过这道原创性门禁后，才能继续做截图和软著材料
 
-After the implementation is functionally complete, run a second originality check:
+项目功能完成后，还要做第二次原创性复检：
 
-- compare the finished project against existing local projects and any obvious nearby reference implementations used during development
-- inspect similarities in folder structure, module boundaries, route layout, page composition, naming patterns, data models, and core rule logic
-- do not treat superficial renaming as sufficient differentiation
-- if originality is weak or similarity is still high, the project must be revised before screenshots and final materials are accepted
+- 对照已有本地项目和开发过程中的明显参考实现
+- 检查目录结构、模块边界、路由布局、页面构成、命名模式、数据模型和核心规则逻辑
+- 不能把简单改名视为“已差异化”
+- 若原创性仍弱，相似度仍高，必须继续修改后再进入截图与最终材料阶段
 
-### 3. Prepare screenshotability
+### 3. 提前保证可截图
 
-Before capturing screenshots, make sure:
+正式截图前必须先确保：
 
-- the local app runs successfully
-- the main screens are reachable
-- layout overlaps, garbled text, and blank states are fixed
+- 本地应用能正常运行
+- 主要界面都能进入
+- 布局重叠、乱码、空白状态都已修复
 
-Prefer stable menu-driven pages so each major module can be captured cleanly.
+优先做稳定的菜单驱动型页面，这样每个主要模块都能清晰截图。
 
-### 4. Capture screenshots
+### 4. 生成并检查截图
 
-Capture screenshots for all major screens.
+必须为所有主要界面截图。
 
-Prefer the in-app browser or Playwright/browser automation when available. Capture:
+优先使用应用内浏览器或 Playwright / 浏览器自动化。至少覆盖：
 
-- home/dashboard
-- every first-level module
-- important second-level views or detail panes
-- any special chart, dialog, or workflow step needed for the manual
+- 首页 / 总览页
+- 每个一级模块
+- 重要二级视图、详情区、弹窗或特殊流程
 
-Save screenshots into a project-local directory and write their relative paths into `softcopyright-manifest.json`.
+截图必须保存到项目本地目录，并自动写入 `softcopyright-manifest.json`。
 
-After screenshots are captured, perform page-by-page screenshot inspection:
+截图完成后，必须逐张检查：
 
-- inspect every main screenshot individually
-- check that no field is missing, clipped, overlapped, or visually blocked
-- check that no Chinese text is garbled and no black square fallback glyphs appear
-- if any screenshot has layout problems, missing content, garbled text, or black boxes, fix the project and recapture the screenshot before continuing
+- 每张主要截图都要单独看
+- 检查字段是否缺失、遮挡、重叠
+- 检查截图是否截到了完整的目标界面，而不是残缺局部
+- 检查中文是否乱码、是否出现黑框字形
+- 检查截图呈现出的布局、卡片层级、留白节奏、字体层级和视觉密度是否仍与 AI 概念参考图一致
+- 只要截图有布局问题、内容缺失、乱码或黑框，就必须修复项目并重截
+- 凡是没有显示完整页面、完整弹窗、完整表格区域或完整图表区域的截图，都视为无效
+- 如果截图缺下方、缺右侧、按钮没截全、标签被切断，也视为无效
+- 如果截图成品与 AI 概念参考图在风格和构图上明显偏离，也视为未通过截图质检
+- 只有当截图证明“整块可审查界面状态都可见”时，截图任务才算完成
 
-### 5. Generate the copyright bundle
+### 5. 生成软著打包产物
 
-After the project and screenshots are ready, run:
+项目和截图准备好后，执行：
 
 ```powershell
 python "C:\Users\Administrator\.codex\skills\innovative-app-generator\scripts\generate_bundle.py" `
-  --project "<project-root>" `
-  --manifest "<project-root>\softcopyright-manifest.json"
+  --project "<project-root>"
 ```
 
-This produces:
+这一步会产出：
 
-- HTML manual
-- DOCX manual
-- PDF manual
-- combined code document in DOCX
-- combined code document in PDF
-- full-code Word document when total code exceeds 60 pages
-- application info text
+- 申请信息 TXT
+- 完整代码 DOCX
+- 前 30 页加后 30 页代码 PDF
+- 手册 DOCX
+- 手册 PDF
 
-### 6. Final QA
+这 5 个文件必须集中放进一个单独的最终打包目录。不得和审计图、截图复核目录、文本抽取文件、HTML 中间件或重复命名文件混放。
 
-Before finishing:
+总控入口必须做到只传 `--project` 就能跑通。若要求用户手工写或手工改 manifest，就违背了一键化约定。
 
-- verify the app runs
-- verify screenshots exist
-- verify screenshots have been checked one by one
-- verify the HTML manual exists and opens
-- verify the DOCX manual exists
-- verify the PDF manual exists when conversion succeeds
-- verify the combined code DOCX exists
-- verify the combined code PDF exists when conversion succeeds
-- read the delivered manual end to end as a final artifact, not as source fragments
-- check the finished manual against delivery standards, including repeated wording, placeholder leakage, stale template text, inconsistent module explanations, and code/document mismatch
-- check that the document does not contain performative “this is real / not a template” wording
-- check that every code excerpt is concise and does not bloat into unnecessarily long consecutive listings inside the manual
-- do not mark the task complete until the final document has been fully read through and checked as a deliverable
-- verify the full-code Word document exists when the code listing exceeds 60 pages
-- verify the application info file exists
-- verify names and versions are consistent across outputs
-- verify the project is not a high-similarity derivative of an existing project
-- if the finished project still lacks originality, continue modifying core modules, flows, and code structure until the similarity risk is materially reduced
+### 6. 最终质检
 
-Also perform code-document screenshot spot checks:
+结束前必须完成以下检查：
 
-- capture and inspect representative screenshots of the generated code documents
-- at minimum inspect the first page, a middle page, and the last page of:
-  - the combined front-30-plus-back-30 code document
-  - the full-code Word document when it exists
-- check line visibility, page numbering, page content continuity, Chinese readability, and whether the page appears to preserve the intended 50-line layout
-- if the exported code document shows clipping, garbling, wrong pagination, or unreadable text, regenerate it before finishing
+- 确认应用可运行
+- 确认截图已生成
+- 确认截图已逐张检查
+- 确认手册 DOCX 已生成
+- 如果两个模块的解释除了标题和几个名词外几乎一样，手册直接无效，必须重写
+- 如果逐行解释、输入输出说明、数据流说明、特殊处理说明是硬编码重复模板，任务直接不算完成
+- 必须检查最终生成的 TXT、DOCX、PDF 成品本身，而不只是检查 manifest 或中间 markdown
+- 必须对最终手册和信息单做逐页视觉检查，关注裁切、`??`、替代字符、黑框、乱码等问题
+- 必须把最终手册逐页渲染成截图，并按页检查这些截图
+- 不能只依赖文本抽取或 XML 检查，必须看最终渲染后的页面图
+- 只要任意一页手册截图存在问题，整份手册都不可交付，必须修复后重生
+- 若最终成品中仍有 `??`、乱码、陈旧模板句或截图残缺，任务不算完成
+- 确认手册 PDF 已生成（环境支持时）
+- 确认 TXT 文件存在，且符合 `【字段】内容` 的严格格式
+- 确认完整代码 DOCX 已生成
+- 确认前后 30 页代码 PDF 已生成（环境支持时）
+- 必须把最终手册整份从头到尾人工读完，不能只读片段
+- 必须按交付物标准检查手册的重复表达、占位残留、过期模板句、模块解释不一致、代码与文档不匹配
+- 不得保留“这是真的”“不是模板”之类表演式措辞
+- 每段代码节选都要简洁，不能膨胀成大段连续堆砌
+- 代码材料生成后，必须核对代码量和导出页数是否真实匹配，不能想当然
+- 只有在“完整读完并检查完成品”之后，才允许判定任务完成
+- 确认名称和版本号在所有产物里一致
+- 再次确认项目不属于高相似度衍生物
+- 若最终项目原创性仍不足，必须继续改核心模块、流程和代码结构
 
-UTF-8 is mandatory throughout the workflow:
+还必须做代码文档截图抽检：
 
-- source files created or modified by this skill must be written in UTF-8
-- generated manifest, markdown, HTML, TXT, and other text outputs must be written in UTF-8
-- after file generation, check whether Chinese text shows garbled characters or black square fallback glyphs
-- if any generated file shows encoding corruption, do not accept the output; fix the encoding issue and regenerate
+- 对生成出的代码文档截图抽检
+- 至少检查以下文档的首页、中间页、末页：
+  - 完整代码 Word
+  - 前 30 页加后 30 页代码 PDF
+- 检查内容可见性、页码、页内容连续性、中文可读性，以及每页是否保持预期的 50 行内容布局
+- 若代码文档出现裁切、乱码、分页错误、不可读文本或代码量与页数不匹配，必须重导出
 
-## Output Files
+全流程必须强制使用 UTF-8：
 
-By default, the generated material output directory is:
+- skill 创建或修改的源码文件必须使用 UTF-8
+- 生成的 manifest、markdown、HTML、TXT 等文本产物必须使用 UTF-8
+- 文件生成后必须检查中文是否乱码或出现黑框字形
+- 发现编码损坏时，不得继续交付，必须修复并重生
+
+## 输出文件规范
+
+默认输出目录：
 
 - `<project>/软件著作权申请资料/正式资料`
 
-Expected files:
+最终标准文件名：
 
-- `<系统名称>_软件著作权鉴定材料.html`
-- `<系统名称>_软件著作权鉴定材料.docx`
-- `<系统名称>_软件著作权鉴定材料.pdf`
-- `<系统名称>-代码(前30页+后30页).docx`
-- `<系统名称>-代码(前30页+后30页).pdf`
-- `<系统名称>-代码(全部).docx` when total pages exceed 60
-- `申请表信息.txt`
+- `<系统名称>.txt`
+- `<系统名称>代码.docx`
+- `<系统名称>代码.pdf`
+- `<系统名称>手册.docx`
+- `<系统名称>手册.pdf`
 
-Code pagination target:
+当总代码页数超过 60 页时：
 
-- actual code pages should aim for 54-58 lines per physical page
-- the generator default is 56 lines per page
+- Word 代码文件名必须显式包含 `（完整版）`
+- PDF 代码文件名必须显式包含 `（60页）`
 
-## Helper Scripts
+所有这 5 个交付物必须放在同一个最终输出目录里，不能把最新的 TXT、代码文件和手册文件散落到各个验证目录。
+
+### 代码文档规则
+
+- Word 代码文档是完整代码文档
+- PDF 代码文档只保留完整代码文档的前 30 页和后 30 页
+- 当总代码页数超过 60 页时，PDF 必须严格等于 60 页
+- 代码文档必须使用竖版
+- 页边距必须为：上 1.5 cm、下 1.5 cm、左 2 cm、右 2 cm
+- 代码文档不得带封面页或结尾说明页
+- 页眉应显示 `<系统名称>代码`
+- 页脚应显示页码
+- 代码内容必须连续，不得为了装饰插入分隔页
+- 每个实际物理页必须校准为 50 行内容
+- 代码量统计必须只计算项目本体源码
+- 生成辅助脚本、打包脚本、截图工具、文档生成器、依赖锁文件、构建配置、`softcopyright-manifest.json`、软著输出目录等都不得计入源程序量
+- 这些辅助或打包文件也不得进入代码文档
+
+### 申请信息 TXT 规则
+
+- 严格使用 `【字段】内容` 格式
+- 需要限制长度的短字段必须控制在 50 个汉字内
+- `软件的主要功能` 必须控制在 600 到 1200 个汉字之间
+
+### 手册规则
+
+- 手册正文中不要写 `版本号`
+- 手册正文中不要写 `总代码行数`
+- 手册全文字体必须统一，不得混入其他代码字体或斜体风格
+
+## 辅助脚本说明
 
 ### `scripts/generate_bundle.py`
 
-Unified entry point for documentation outputs.
+统一产出整套软著交付物。
 
 ### `scripts/generate_html_manual_from_manifest.py`
 
-Builds the HTML and DOCX identification manual from the manifest and actual code.
+根据 manifest 和真实代码生成手册，并输出 DOCX 与 PDF。
 
 ### `scripts/generate_code_pages.py`
 
-Builds the combined front-30-plus-back-30 code material document, PDF, optional full-code Word document, and the application info text.
+生成完整代码 Word、前后 30 页代码 PDF，以及申请信息 TXT。
 
-## Notes
+## 备注
 
-- This skill is whole-project oriented. Do not silently narrow the scope to Java only when the project also includes frontend code.
-- The manual and code materials must reference real code, real screenshots, and real modules from the generated project.
-- Do not insert “生成日期”, “自动生成”, or similar machine-output wording into the final materials unless the user explicitly asks for it.
-- If originality fails, the correct action is to scrap the project and rebuild it, not to cosmetically edit it.
-- Originality must be checked twice: once during design/implementation direction selection, and once again after the project is completed.
-- Screenshot inspection, code-document screenshot spot checks, and UTF-8 encoding checks are mandatory completion gates.
+- 这是一个面向“整个项目”的 skill。若项目同时包含前端和后端，不得偷偷缩成只看 Java。
+- 手册和代码材料必须引用真实代码、真实截图和真实模块。
+- 除非用户明确要求，否则最终材料里不得出现“生成日期”“自动生成”等机器口吻。
+- 若原创性检查失败，正确做法是废弃项目并重做，而不是靠修文案挽救。
+- 原创性必须检查两次：一次在设计 / 实现方向确定时，一次在项目完成后。
+- 截图检查、代码文档截图抽检和 UTF-8 编码检查，都是强制完成门禁。
+- 当用户要求五个标准交付物时，不得把 HTML 中间件当作最终命名产物留在交付目录中。

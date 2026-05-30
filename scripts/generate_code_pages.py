@@ -2,22 +2,28 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
+import re
 import subprocess
+import tempfile
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
 
 from docx import Document
+from docx.enum.section import WD_ORIENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
+from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Cm, Pt
+from pypdf import PdfReader, PdfWriter
 
 
-LINES_PER_PAGE = 56
-PAGES_PER_DOC = 30
-FULL_DOC_THRESHOLD = 60
-CODE_FONT_SIZE = 7.5
-CODE_LINE_SPACING_PT = 10
+PAGE_LINE_TARGET = 50
+FRONT_BACK_PAGES = 30
+CODE_FONT_SIZE = 10.5  # 五号
+INITIAL_LINE_SPACING = 14.0
+MAX_WRAP_UNITS = 88
 
 INCLUDE_EXTENSIONS = {
     ".java",
@@ -65,6 +71,24 @@ EXCLUDED_DIRS = {
     "软件著作权申请资料",
 }
 
+EXCLUDED_PATH_PREFIXES = (
+    "scripts/",
+    "docs/",
+    "screenshots/",
+    "软件著作权申请资料/",
+)
+
+EXCLUDED_FILENAMES = {
+    "softcopyright-manifest.json",
+    "package-lock.json",
+    "package.json",
+    "tsconfig.json",
+    "tsconfig.app.json",
+    "tsconfig.node.json",
+    "eslint.config.js",
+    "vite.config.ts",
+}
+
 PRIORITY_PARTS = [
     ("java-server", "src"),
     ("src",),
@@ -85,22 +109,12 @@ class SourceFile:
     category: str
 
 
-def set_run_font(run, size: float, bold: bool = False, ascii_font: str = "Courier New", east_asia: str = "SimSun") -> None:
-    run.font.name = ascii_font
-    run._element.rPr.rFonts.set(qn("w:eastAsia"), east_asia)
+def set_run_font(run, size: float, bold: bool = False) -> None:
+    run.font.name = "SimSun"
+    run._element.rPr.rFonts.set(qn("w:eastAsia"), "SimSun")
     run.font.size = Pt(size)
     run.bold = bold
-
-
-def set_paragraph_body(paragraph) -> None:
-    fmt = paragraph.paragraph_format
-    fmt.space_before = Pt(0)
-    fmt.space_after = Pt(0)
-    fmt.left_indent = Pt(0)
-    fmt.right_indent = Pt(0)
-    fmt.first_line_indent = Pt(0)
-    fmt.line_spacing = Pt(CODE_LINE_SPACING_PT)
-    fmt.line_spacing_rule = WD_LINE_SPACING.EXACTLY
+    run.italic = False
 
 
 def read_text(path: Path) -> str:
@@ -127,14 +141,19 @@ def infer_category(relative_path: str) -> str:
 
 
 def is_excluded(path: Path, project_root: Path) -> bool:
-    relative_parts = path.relative_to(project_root).parts
-    return any(part in EXCLUDED_DIRS for part in relative_parts)
+    relative = path.relative_to(project_root)
+    relative_posix = relative.as_posix()
+    if path.name in EXCLUDED_FILENAMES:
+        return True
+    if any(relative_posix.startswith(prefix) for prefix in EXCLUDED_PATH_PREFIXES):
+        return True
+    return any(part in EXCLUDED_DIRS for part in relative.parts)
 
 
 def priority_rank(relative_parts: tuple[str, ...]) -> int:
-    parts_lower = tuple(part.lower() for part in relative_parts)
+    lowered = tuple(part.lower() for part in relative_parts)
     for index, prefix in enumerate(PRIORITY_PARTS):
-        if parts_lower[: len(prefix)] == prefix:
+        if lowered[: len(prefix)] == prefix:
             return index
     return len(PRIORITY_PARTS)
 
@@ -150,91 +169,123 @@ def collect_source_files(project_root: Path) -> list[SourceFile]:
             continue
         relative = path.relative_to(project_root).as_posix()
         files.append(SourceFile(path=path, relative_path=relative, category=infer_category(relative)))
-
     files.sort(key=lambda item: (priority_rank(tuple(item.path.relative_to(project_root).parts)), item.relative_path.lower()))
     return files
 
 
-def build_listing_lines(files: Iterable[SourceFile]) -> list[str]:
+def display_units(text: str) -> int:
+    total = 0
+    for char in text:
+        total += 2 if unicodedata.east_asian_width(char) in {"W", "F"} else 1
+    return total
+
+
+def wrap_content_line(line: str, max_units: int = MAX_WRAP_UNITS) -> list[str]:
+    if not line:
+        return [""]
+    wrapped: list[str] = []
+    remaining = line
+    continuation_prefix = "    "
+    while display_units(remaining) > max_units:
+        units = 0
+        split_at = 0
+        for index, char in enumerate(remaining, start=1):
+            units += 2 if unicodedata.east_asian_width(char) in {"W", "F"} else 1
+            if units > max_units:
+                break
+            split_at = index
+        if split_at <= 0:
+            split_at = min(len(remaining), max_units)
+        wrapped.append(remaining[:split_at])
+        remaining = continuation_prefix + remaining[split_at:]
+    wrapped.append(remaining)
+    return wrapped
+
+
+def build_content_lines(system_name: str, files: list[SourceFile]) -> list[str]:
     lines: list[str] = []
+    lines.extend(
+        [
+            f"【软件名称】{system_name}",
+            "【代码说明】以下内容为完整项目源程序连续清单",
+            "",
+        ]
+    )
     for source in files:
-        lines.append(f"// ===== File: {source.relative_path} =====")
-        lines.append(f"// ===== Category: {source.category} =====")
-        lines.extend(read_text(source.path).splitlines())
+        lines.extend(
+            wrap_content_line(f"【文件】{source.relative_path}")
+            + wrap_content_line(f"【类型】{source.category}")
+        )
+        for raw_line in read_text(source.path).splitlines():
+            lines.extend(wrap_content_line(raw_line))
         lines.append("")
     return lines
 
 
-def page_lines(lines: list[str], lines_per_page: int) -> list[list[str]]:
-    total_pages = (len(lines) + lines_per_page - 1) // lines_per_page
-    padded = lines + [""] * (total_pages * lines_per_page - len(lines))
-    return [padded[index * lines_per_page : (index + 1) * lines_per_page] for index in range(total_pages)]
+def expected_page_count(content_lines: list[str]) -> int:
+    return math.ceil(len(content_lines) / PAGE_LINE_TARGET)
 
 
-def add_code_page(doc: Document, page_content: list[str], add_break_after: bool) -> None:
-    paragraph = doc.add_paragraph()
-    set_paragraph_body(paragraph)
-    run = paragraph.add_run("\n".join(page_content))
-    set_run_font(run, CODE_FONT_SIZE, ascii_font="Courier New", east_asia="SimSun")
-    if add_break_after:
-        doc.add_page_break()
-
-
-def init_doc(title: str, system_name: str, version: str) -> Document:
+def build_docx(system_name: str, content_lines: list[str], output_path: Path, line_spacing_pt: float) -> None:
     doc = Document()
     section = doc.sections[0]
-    section.top_margin = Cm(1.25)
-    section.bottom_margin = Cm(1.25)
-    section.left_margin = Cm(1.2)
-    section.right_margin = Cm(1.2)
-    normal_style = doc.styles["Normal"]
-    normal_style.font.name = "SimSun"
-    normal_style._element.rPr.rFonts.set(qn("w:eastAsia"), "SimSun")
-    normal_style.font.size = Pt(12)
+    section.orientation = WD_ORIENT.PORTRAIT
+    section.page_width = Cm(21.0)
+    section.page_height = Cm(29.7)
+    section.top_margin = Cm(1.5)
+    section.bottom_margin = Cm(1.5)
+    section.left_margin = Cm(2.0)
+    section.right_margin = Cm(2.0)
+    section.header_distance = Cm(0.8)
+    section.footer_distance = Cm(0.8)
 
-    heading = doc.add_paragraph()
-    heading.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = heading.add_run(title)
-    set_run_font(run, 16, bold=True, ascii_font="SimSun", east_asia="SimSun")
+    normal = doc.styles["Normal"]
+    normal.font.name = "SimSun"
+    normal._element.rPr.rFonts.set(qn("w:eastAsia"), "SimSun")
+    normal.font.size = Pt(CODE_FONT_SIZE)
 
-    for line in [
-        f"软件名称：{system_name}",
-        f"版本号：{version}",
-    ]:
-        p = doc.add_paragraph()
-        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        run = p.add_run(line)
-        set_run_font(run, 12, ascii_font="SimSun", east_asia="SimSun")
+    header = section.header.paragraphs[0]
+    header.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    header_run = header.add_run(f"{system_name}代码")
+    set_run_font(header_run, 10.5, bold=False)
 
-    doc.add_page_break()
-    return doc
+    footer = section.footer.paragraphs[0]
+    footer.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    add_page_number_field(footer)
 
+    paragraph = doc.add_paragraph()
+    fmt = paragraph.paragraph_format
+    fmt.space_before = Pt(0)
+    fmt.space_after = Pt(0)
+    fmt.left_indent = Pt(0)
+    fmt.right_indent = Pt(0)
+    fmt.first_line_indent = Pt(0)
+    fmt.line_spacing = Pt(line_spacing_pt)
+    fmt.line_spacing_rule = WD_LINE_SPACING.EXACTLY
 
-def build_combined_doc(system_name: str, version: str, front_page_numbers: list[int], front_pages: list[list[str]], back_page_numbers: list[int], back_pages: list[list[str]], output_path: Path) -> None:
-    doc = init_doc(f"{system_name} - 代码材料（前30页+后30页）", system_name, version)
-
-    seen_pages = set(front_page_numbers)
-    unique_back = [(page_number, back_pages[index]) for index, page_number in enumerate(back_page_numbers) if page_number not in seen_pages]
-
-    for index, _page_number in enumerate(front_page_numbers):
-        is_last_front = index == len(front_page_numbers) - 1
-        add_break = not is_last_front or bool(unique_back)
-        add_code_page(doc, front_pages[index], add_break)
-
-    if unique_back:
-        for index, (_page_number, page_content) in enumerate(unique_back):
-            add_code_page(doc, page_content, index != len(unique_back) - 1)
+    run = paragraph.add_run("\n".join(content_lines))
+    set_run_font(run, CODE_FONT_SIZE)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(output_path)
 
 
-def build_full_doc(system_name: str, version: str, all_pages: list[list[str]], output_path: Path) -> None:
-    doc = init_doc(f"{system_name} - 全量代码材料", system_name, version)
-    for index, page_content in enumerate(all_pages, start=1):
-        add_code_page(doc, page_content, index != len(all_pages))
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    doc.save(output_path)
+def add_page_number_field(paragraph) -> None:
+    run = paragraph.add_run()
+    set_run_font(run, 10.5)
+    fld_begin = OxmlElement("w:fldChar")
+    fld_begin.set(qn("w:fldCharType"), "begin")
+    instr = OxmlElement("w:instrText")
+    instr.set(qn("xml:space"), "preserve")
+    instr.text = " PAGE "
+    fld_separate = OxmlElement("w:fldChar")
+    fld_separate.set(qn("w:fldCharType"), "separate")
+    fld_end = OxmlElement("w:fldChar")
+    fld_end.set(qn("w:fldCharType"), "end")
+    run._r.append(fld_begin)
+    run._r.append(instr)
+    run._r.append(fld_separate)
+    run._r.append(fld_end)
 
 
 def convert_docx_to_pdf(docx_path: Path, pdf_path: Path) -> bool:
@@ -250,15 +301,249 @@ def convert_docx_to_pdf(docx_path: Path, pdf_path: Path) -> bool:
         "$word.Quit();"
     )
     try:
-        subprocess.run(
-            ["powershell", "-NoProfile", "-Command", script],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
+        subprocess.run(["powershell", "-NoProfile", "-Command", script], check=True, capture_output=True, text=True)
         return True
     except subprocess.CalledProcessError:
         return False
+
+
+def count_pdf_pages(pdf_path: Path) -> int:
+    return len(PdfReader(str(pdf_path)).pages)
+
+
+def pick_front_back_pdf_pages(full_pdf: Path, final_pdf: Path) -> int:
+    reader = PdfReader(str(full_pdf))
+    total = len(reader.pages)
+    writer = PdfWriter()
+    if total <= FRONT_BACK_PAGES * 2:
+        indexes = list(range(total))
+    else:
+        indexes = list(range(FRONT_BACK_PAGES)) + list(range(total - FRONT_BACK_PAGES, total))
+    for index in indexes:
+        writer.add_page(reader.pages[index])
+    with final_pdf.open("wb") as fh:
+        writer.write(fh)
+    return len(indexes)
+
+
+def calibrate_line_spacing(system_name: str, content_lines: list[str], full_docx: Path) -> tuple[float, Path, int]:
+    expected_pages = expected_page_count(content_lines)
+    temp_dir = Path(tempfile.mkdtemp(prefix="code-pages-"))
+    best_pdf = temp_dir / "full.pdf"
+    best_actual = -1
+    chosen_spacing = INITIAL_LINE_SPACING
+    low = 12.0
+    high = 16.0
+    best_diff = None
+
+    for _ in range(8):
+        spacing = round((low + high) / 2, 2)
+        build_docx(system_name, content_lines, full_docx, spacing)
+        if not convert_docx_to_pdf(full_docx, best_pdf):
+            raise SystemExit("代码 Word 转 PDF 失败，无法校验页数。")
+        actual_pages = count_pdf_pages(best_pdf)
+        if actual_pages == expected_pages:
+            return spacing, best_pdf, actual_pages
+        diff = abs(actual_pages - expected_pages)
+        if best_diff is None or diff < best_diff:
+            best_diff = diff
+            best_actual = actual_pages
+            chosen_spacing = spacing
+        if actual_pages < expected_pages:
+            low = spacing
+        else:
+            high = spacing
+    if best_actual != expected_pages:
+        raise SystemExit(f"代码量与页数校验失败：内容应为 {expected_pages} 页，实际导出为 {best_actual} 页。")
+    return chosen_spacing, best_pdf, best_actual
+
+
+def clip_text(text: str, limit: int) -> str:
+    text = " ".join((text or "").split())
+    return text[:limit]
+
+
+def infer_languages(source_files: list[SourceFile]) -> list[str]:
+    mapping = {
+        ".java": "Java",
+        ".kt": "Kotlin",
+        ".ts": "TypeScript",
+        ".tsx": "TypeScript",
+        ".js": "JavaScript",
+        ".jsx": "JavaScript",
+        ".html": "HTML",
+        ".css": "CSS",
+        ".scss": "CSS",
+        ".less": "CSS",
+        ".xml": "XML",
+        ".json": "JSON",
+    }
+    ordered_suffixes = [".java", ".kt", ".ts", ".tsx", ".js", ".jsx", ".html", ".css", ".scss", ".less", ".xml", ".json"]
+    found = {item.path.suffix.lower() for item in source_files}
+    result: list[str] = []
+    for suffix in ordered_suffixes:
+        if suffix in found:
+            label = mapping[suffix]
+            if label not in result:
+                result.append(label)
+    return result
+
+
+def read_optional_text(path: Path) -> str:
+    if not path.exists():
+        return ""
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def infer_environment(project_root: Path, manifest: dict, source_files: list[SourceFile]) -> dict:
+    env = dict(manifest.get("environments", {}))
+    languages = env.get("languages") or infer_languages(source_files)
+    has_java = "Java" in languages or "Kotlin" in languages
+    has_node = (project_root / "package.json").exists()
+    env.setdefault("dev_hardware", "Intel i5及以上CPU，16GB内存，50GB硬盘")
+    env.setdefault("run_hardware", "双核CPU，4GB内存，2GB可用磁盘")
+    env.setdefault("dev_os", "Windows 10/11 64位")
+    if not env.get("dev_tools"):
+        tools = []
+        if has_java:
+            tools.append("JDK 21")
+        if has_node:
+            tools.extend(["Node.js", "Vite"])
+        tools.append("Visual Studio Code")
+        env["dev_tools"] = "、".join(tools)
+    env.setdefault("run_platform", "Windows、macOS、Linux")
+    if not env.get("support_env"):
+        supports = []
+        if has_java:
+            supports.append("JDK 21")
+        if has_node:
+            supports.append("现代浏览器")
+        env["support_env"] = "、".join(supports) if supports else "现代浏览器"
+    env["languages"] = languages
+    return env
+
+
+def infer_purpose_and_industry(system_name: str, manifest: dict, project_root: Path) -> tuple[str, str]:
+    purpose = manifest.get("purpose", "")
+    industry = manifest.get("industry", "")
+    readme = read_optional_text(project_root / "README.md")
+    if not purpose:
+        if "医院" in system_name or "医疗" in readme:
+            purpose = "互联网医院诊疗与运营协同管理"
+        else:
+            purpose = system_name
+    if not industry:
+        if "医院" in system_name or "医疗" in readme:
+            industry = "互联网医疗、智慧医院管理"
+        else:
+            industry = "行业业务管理软件"
+    return clip_text(purpose, 50), clip_text(industry, 50)
+
+
+def infer_feature_categories(manifest: dict, system_name: str, industry: str) -> str:
+    categories = manifest.get("technical_feature_categories")
+    if categories:
+        return "、".join(categories[:2])
+    if "医疗" in industry or "医院" in system_name:
+        return "人工智能软件、医疗软件"
+    if "教育" in industry:
+        return "人工智能软件、教育软件"
+    return "人工智能软件、应用软件"
+
+
+def infer_main_functions(project_root: Path, manifest: dict) -> list[str]:
+    if manifest.get("main_functions"):
+        return list(manifest["main_functions"])
+    readme = read_optional_text(project_root / "README.md")
+    features: list[str] = []
+    capture = False
+    for raw_line in readme.splitlines():
+        line = raw_line.strip()
+        if line.startswith("## ") and "主要特性" in line:
+            capture = True
+            continue
+        if capture and line.startswith("## "):
+            break
+        if capture and line.startswith("- "):
+            features.append(line[2:].strip())
+    return features
+
+
+def build_main_functions_text(project_root: Path, manifest: dict) -> str:
+    items = infer_main_functions(project_root, manifest)
+    if not items:
+        items = [module.get("summary", module.get("title", "")) for module in manifest.get("modules", []) if module.get("summary") or module.get("title")]
+    if not items:
+        items = ["系统提供完整业务流程管理、数据处理、结果展示和导出归档能力。"]
+    parts = [f"（{idx}）{item}" for idx, item in enumerate(items, start=1)]
+    extra_modules = manifest.get("modules", [])
+    for module in extra_modules:
+        text = module.get("summary") or module.get("algorithm") or ""
+        if text:
+            candidate = f"（{len(parts)+1}）{text}"
+            if len("".join(parts) + candidate) <= 1200:
+                parts.append(candidate)
+        if len("".join(parts)) >= 600:
+            break
+    combined = "".join(parts)
+    if len(combined) < 600:
+        supplement = "系统支持完整中文界面、模块联动操作、结果导出、异常提示、数据校验与参数维护，可满足实际业务运行、成果归档与后续扩展需要。"
+        while len(combined) < 600:
+            candidate = f"（{len(parts)+1}）{supplement}"
+            if len(combined) + len(candidate) > 1200:
+                break
+            parts.append(candidate)
+            combined = "".join(parts)
+    combined = "".join(parts)
+    return combined[:1200]
+
+
+def build_tech_features_text(manifest: dict) -> str:
+    raw_items = manifest.get("technical_features", [])
+    cleaned_items: list[str] = []
+    for item in raw_items:
+        text = str(item).strip()
+        if not text:
+            continue
+        text = re.sub(r"[。；;、，,\s]+$", "", text)
+        cleaned_items.append(text)
+    if not cleaned_items:
+        cleaned_items = ["采用模块化架构、规则引擎与结构化数据导出机制，支持业务联动、结果展示与资料生成"]
+
+    features = ""
+    for item in cleaned_items:
+        candidate = item if not features else f"{features}；{item}"
+        if len(candidate) <= 100:
+            features = candidate
+        else:
+            break
+
+    if not features:
+        features = clip_text(cleaned_items[0], 100).rstrip("；、，,。 ")
+    return features
+
+
+def build_application_info(system_name: str, version: str, manifest: dict, total_lines: int, project_root: Path, source_files: list[SourceFile]) -> str:
+    env = infer_environment(project_root, manifest, source_files)
+    purpose, industry = infer_purpose_and_industry(system_name, manifest, project_root)
+    fields = [
+        ("软件全称", system_name),
+        ("版本号", version),
+        ("软件分类", manifest.get("software_category", "应用软件")),
+        ("开发的硬件环境", clip_text(env.get("dev_hardware", ""), 50)),
+        ("运行的硬件环境", clip_text(env.get("run_hardware", ""), 50)),
+        ("开发该软件的操作系统", clip_text(env.get("dev_os", ""), 50)),
+        ("软件开发环境/开发工具", clip_text(env.get("dev_tools", ""), 50)),
+        ("该软件的运行平台/操作系统", clip_text(env.get("run_platform", ""), 50)),
+        ("软件运行支撑环境/支持软件", clip_text(env.get("support_env", ""), 50)),
+        ("编程语言", clip_text("、".join(env.get("languages", [])), 50)),
+        ("源程序量", f"{total_lines}行"),
+        ("开发目的", purpose),
+        ("面向领域/行业", industry),
+        ("软件的主要功能", build_main_functions_text(project_root, manifest)),
+        ("软件的技术特点", f"{infer_feature_categories(manifest, system_name, industry)}；{build_tech_features_text(manifest)}"),
+    ]
+    return "\n".join(f"【{label}】{value}" for label, value in fields)
 
 
 def load_manifest(path: Path | None) -> dict:
@@ -267,42 +552,15 @@ def load_manifest(path: Path | None) -> dict:
     return {}
 
 
-def build_application_info(system_name: str, version: str, owner: str, source_files: list[SourceFile], total_lines: int, total_pages: int, languages: list[str]) -> str:
-    backend_lines = sum(count_lines(item.path) for item in source_files if item.path.suffix.lower() in {".java", ".kt"})
-    frontend_lines = total_lines - backend_lines
-    extras = []
-    if total_pages > FULL_DOC_THRESHOLD:
-        extras.append("代码超过60页，已补充全量代码Word文档。")
-        extras.append("已输出前后60页合并版PDF代码文档。")
-    return "\n".join(
-        [
-            f"软件全称：{system_name}",
-            f"版本号：{version}",
-            f"著作权人：{owner}",
-            f"编程语言：{'、'.join(languages) if languages else '未识别'}",
-            f"源程序量：{total_lines} 行（完整项目物理总行数）",
-            f"其中后端源码：{backend_lines} 行",
-            f"其中前端及其他源码：{frontend_lines} 行",
-            f"源码文件数：{len(source_files)}",
-            f"代码材料总页数：{total_pages} 页",
-            f"每页代码行数目标：54-58 行（当前默认 {LINES_PER_PAGE} 行）",
-            *extras,
-        ]
-    )
-
-
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Generate one combined front-30-plus-back-30 software copyright code document.")
+    parser = argparse.ArgumentParser(description="Generate full code DOCX and front/back 30-page PDF for software copyright use.")
     parser.add_argument("--project", required=True, help="Project root path")
     parser.add_argument("--manifest", help="Manifest JSON path")
     parser.add_argument("--system-name", help="Software name shown in the documents")
     parser.add_argument("--version", help="Software version")
-    parser.add_argument("--owner", help="Owner name for the application info text")
     parser.add_argument("--output-root", help="Output directory, defaults to <project>/软件著作权申请资料/正式资料")
-    parser.add_argument("--lines-per-page", type=int, default=LINES_PER_PAGE, help="Lines per page, default 50")
-    parser.add_argument("--pages-per-doc", type=int, default=PAGES_PER_DOC, help="Pages per document, default 30")
-    parser.add_argument("--skip-app-info", action="store_true", help="Do not emit 申请表信息.txt")
-    parser.add_argument("--skip-pdf", action="store_true", help="Do not emit PDF for the combined code document")
+    parser.add_argument("--skip-pdf", action="store_true", help="Do not emit PDF for the code document")
+    parser.add_argument("--skip-app-info", action="store_true", help="Do not emit XXX.txt")
     return parser.parse_args()
 
 
@@ -313,54 +571,58 @@ def main() -> None:
 
     system_name = args.system_name or manifest.get("system_name") or project_root.name
     version = args.version or manifest.get("version") or "V1.0"
-    owner = args.owner or manifest.get("owner") or "项目开发团队"
     output_root = Path(args.output_root).resolve() if args.output_root else project_root / "软件著作权申请资料" / "正式资料"
 
     source_files = collect_source_files(project_root)
     if not source_files:
-        raise SystemExit("No source files matched the built-in rules.")
+        raise SystemExit("未找到符合规则的源码文件。")
 
-    listing_lines = build_listing_lines(source_files)
-    paged = page_lines(listing_lines, args.lines_per_page)
-    total_pages = len(paged)
-    total_lines = sum(count_lines(item.path) for item in source_files)
+    content_lines = build_content_lines(system_name, source_files)
+    total_source_lines = sum(count_lines(item.path) for item in source_files)
 
-    front_page_numbers = list(range(1, min(args.pages_per_doc, total_pages) + 1))
-    back_start = max(1, total_pages - args.pages_per_doc + 1)
-    back_page_numbers = list(range(back_start, total_pages + 1))
-    front_pages = [paged[number - 1] for number in front_page_numbers]
-    back_pages = [paged[number - 1] for number in back_page_numbers]
+    temp_full_docx = output_root / "__code_temp__.docx"
+    info_txt = output_root / f"{system_name}.txt"
 
-    combined_docx = output_root / f"{system_name}-代码(前30页+后30页).docx"
-    combined_pdf = output_root / f"{system_name}-代码(前30页+后30页).pdf"
-    build_combined_doc(system_name, version, front_page_numbers, front_pages, back_page_numbers, back_pages, combined_docx)
+    spacing, temp_full_pdf, actual_full_pages = calibrate_line_spacing(system_name, content_lines, temp_full_docx)
+    expected_pages = expected_page_count(content_lines)
+    if actual_full_pages != expected_pages:
+        raise SystemExit(f"Code page validation failed: expected {expected_pages} pages, got {actual_full_pages}.")
 
-    full_docx = None
-    if total_pages > FULL_DOC_THRESHOLD:
-        full_docx = output_root / f"{system_name}-代码(全部).docx"
-        build_full_doc(system_name, version, paged, full_docx)
+    if actual_full_pages > FRONT_BACK_PAGES * 2:
+        full_docx = output_root / f"{system_name}代码（完整版）.docx"
+        final_pdf = output_root / f"{system_name}代码（60页）.pdf"
+    else:
+        full_docx = output_root / f"{system_name}代码.docx"
+        final_pdf = output_root / f"{system_name}代码.pdf"
 
-    pdf_created = False
+    if full_docx.exists():
+        full_docx.unlink()
+    temp_full_docx.replace(full_docx)
+
+    final_pdf_pages = 0
     if not args.skip_pdf:
-        pdf_created = convert_docx_to_pdf(combined_docx, combined_pdf)
+        if final_pdf.exists():
+            final_pdf.unlink()
+        final_pdf_pages = pick_front_back_pdf_pages(temp_full_pdf, final_pdf)
+        if actual_full_pages > FRONT_BACK_PAGES * 2 and final_pdf_pages != FRONT_BACK_PAGES * 2:
+            raise SystemExit(f"Code PDF page validation failed: expected 60 pages, got {final_pdf_pages}.")
 
-    languages = manifest.get("environments", {}).get("languages", [])
-    app_info_path = output_root / "申请表信息.txt"
     if not args.skip_app_info:
-        app_info_path.write_text(
-            build_application_info(system_name, version, owner, source_files, total_lines, total_pages, languages),
-            encoding="utf-8",
-        )
+        info_txt.write_text(build_application_info(system_name, version, manifest, total_source_lines, project_root, source_files), encoding="utf-8")
 
-    print(f"COMBINED_DOCX={combined_docx}")
-    print(f"COMBINED_PDF={combined_pdf if pdf_created else 'NOT_CREATED'}")
-    print(f"FULL_DOCX={full_docx if full_docx else 'NOT_REQUIRED'}")
-    if not args.skip_app_info:
-        print(f"APP_INFO={app_info_path}")
-    print(f"SOURCE_FILES={len(source_files)}")
-    print(f"TOTAL_LINES={total_lines}")
-    print(f"TOTAL_PAGES={total_pages}")
-    print(f"LINES_PER_PAGE={args.lines_per_page}")
+    print(f"FULL_DOCX={full_docx}")
+    print(f"FINAL_PDF={final_pdf if final_pdf_pages else 'NOT_CREATED'}")
+    print(f"INFO_TXT={info_txt if not args.skip_app_info else 'SKIPPED'}")
+    print(f"TOTAL_SOURCE_LINES={total_source_lines}")
+    print(f"CONTENT_LINES={len(content_lines)}")
+    print(f"EXPECTED_PAGES={expected_pages}")
+    print(f"ACTUAL_PAGES={actual_full_pages}")
+    print(f"LINE_SPACING_PT={spacing}")
+    print(f"TOTAL_SOURCE_LINES={total_source_lines}")
+    print(f"CONTENT_LINES={len(content_lines)}")
+    print(f"EXPECTED_PAGES={expected_pages}")
+    print(f"ACTUAL_PAGES={actual_full_pages}")
+    print(f"LINE_SPACING_PT={spacing}")
 
 
 if __name__ == "__main__":
