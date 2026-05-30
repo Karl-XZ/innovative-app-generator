@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import base64
 import html
+import io
 import json
 import re
 import subprocess
@@ -45,6 +46,31 @@ def project_line_count(project_root: Path) -> int:
 def data_uri(path: Path) -> str:
     mime = "image/png"
     return f"data:{mime};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"
+
+
+def build_manual_image_bytes(path: Path, *, min_width: int = 2400) -> bytes:
+    raw = path.read_bytes()
+    try:
+        from PIL import Image, ImageFilter, ImageOps
+    except Exception:
+        return raw
+
+    with Image.open(io.BytesIO(raw)) as image:
+        prepared = ImageOps.exif_transpose(image).convert("RGB")
+        if prepared.width < min_width and prepared.width > 0:
+            scale = min_width / prepared.width
+            prepared = prepared.resize(
+                (round(prepared.width * scale), round(prepared.height * scale)),
+                Image.Resampling.LANCZOS,
+            )
+        prepared = prepared.filter(ImageFilter.UnsharpMask(radius=1.8, percent=155, threshold=2))
+        buffer = io.BytesIO()
+        prepared.save(buffer, format="PNG", optimize=True)
+        return buffer.getvalue()
+
+
+def data_uri_from_bytes(payload: bytes) -> str:
+    return f"data:image/png;base64,{base64.b64encode(payload).decode('ascii')}"
 
 
 def code_slice(project_root: Path, ref: dict) -> tuple[str, str]:
@@ -203,14 +229,16 @@ def build_html(project_root: Path, manifest: dict, output_path: Path) -> None:
 
     operation_modules = []
     detail_modules = []
-    for index, module in enumerate(manifest.get("modules", []), start=1):
+    modules = manifest.get("modules", [])
+    for index, module in enumerate(modules, start=1):
         screenshot_html = ""
         shot = module.get("screenshot") or {}
         if shot.get("file"):
             shot_path = project_root / shot["file"]
             if shot_path.exists():
+                image_bytes = build_manual_image_bytes(shot_path)
                 screenshot_html = (
-                    f"<div class='figure'><img src='{data_uri(shot_path)}' alt='{esc(shot.get('title', module['title']))}'>"
+                    f"<div class='figure figure--module'><img src='{data_uri_from_bytes(image_bytes)}' alt='{esc(shot.get('title', module['title']))}'>"
                     f"<div class='figcaption'>图4-{index} {esc(shot.get('title', module['title']))}</div>"
                     f"</div>"
                 )
@@ -301,6 +329,7 @@ def build_html(project_root: Path, manifest: dict, output_path: Path) -> None:
     .note, .tip, .warning {{ border: 1px solid #888; padding: 10px 12px; margin: 12px 0; background: #fafafa; }}
     .meta {{ color:#333; font-size: 13px; margin: 6px 0 10px; }}
     .figure img {{ width:100%; border:1px solid #999; }}
+    .figure--module {{ margin-top: 14px; padding: 10px; border: 1px solid #999; background: #fff; }}
     .figcaption {{ text-align:center; font-size:13px; margin-top:6px; color:#111; }}
     .module + .module {{ margin-top: 20px; }}
     footer {{ text-align:center; color:#111; font-size:13px; margin-top:28px; }}
@@ -491,7 +520,8 @@ def build_docx(project_root: Path, manifest: dict, output_path: Path) -> None:
         add_body(doc, f"注意：{install_note}")
 
     add_heading(doc, 1, "4. 系统操作指南与系统的详细操作步骤")
-    for index, module in enumerate(manifest.get("modules", []), start=1):
+    modules = manifest.get("modules", [])
+    for index, module in enumerate(modules, start=1):
         add_heading(doc, 2, f"4.{index} {module['title']}")
         add_body(doc, f"菜单：{module.get('menu', '')}；页面路径：{module.get('route', '')}")
         for step_index, step in enumerate(module.get("steps", []), start=1):
@@ -500,11 +530,22 @@ def build_docx(project_root: Path, manifest: dict, output_path: Path) -> None:
         if shot.get("file"):
             shot_path = project_root / shot["file"]
             if shot_path.exists():
-                doc.add_picture(str(shot_path), width=Cm(15.8))
+                doc.add_page_break()
+                shot_heading = doc.add_paragraph()
+                shot_heading.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                shot_run = shot_heading.add_run(f"4.{index}.1 \u6a21\u5757\u9ad8\u6e05\u622a\u56fe")
+                set_font(shot_run, 13, bold=True)
+                doc.add_picture(io.BytesIO(build_manual_image_bytes(shot_path)), width=Cm(17.0))
                 caption = doc.add_paragraph()
                 caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
                 run = caption.add_run(f"图4-{index} {shot.get('title', module['title'])}")
                 set_font(run, 10.5)
+                note = doc.add_paragraph()
+                note.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                note_run = note.add_run("\u672c\u9875\u4fdd\u7559\u6574\u5c4f\u754c\u9762\u622a\u56fe\uff0c\u4f9b\u5ba1\u67e5\u65f6\u653e\u5927\u67e5\u770b\u6a21\u5757\u5e03\u5c40\u4e0e\u5b57\u6bb5\u4fe1\u606f\u3002")
+                set_font(note_run, 10.5)
+                if index < len(modules):
+                    doc.add_page_break()
 
     add_heading(doc, 1, "5. 功能模块详解与对应主程序段")
     for index, module in enumerate(manifest.get("modules", []), start=1):
