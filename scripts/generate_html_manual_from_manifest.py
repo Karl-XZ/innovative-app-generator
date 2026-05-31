@@ -113,6 +113,58 @@ def join_field_meanings(fields: list[dict]) -> str:
     return "；".join(pairs)
 
 
+def infer_feature_categories(manifest: dict) -> str:
+    categories = [normalize_sentence(item) for item in manifest.get("technical_feature_categories", []) if normalize_sentence(item)]
+    if categories:
+        return "、".join(categories[:2])
+    system_name = str(manifest.get("system_name", ""))
+    industry = str(manifest.get("industry", ""))
+    hints = f"{system_name} {industry}"
+    if any(token in hints for token in ["医院", "医疗", "诊疗", "病历", "处方"]):
+        return "医疗软件、人工智能软件"
+    if any(token in hints for token in ["仪器", "控制", "实验室", "设备"]):
+        return "物联网软件、人工智能软件"
+    if any(token in hints for token in ["教育", "校园", "课堂"]):
+        return "教育软件、人工智能软件"
+    return "人工智能软件、应用软件"
+
+
+def build_feature_description(manifest: dict) -> str:
+    features = [normalize_sentence(item) for item in manifest.get("technical_features", []) if normalize_sentence(item)]
+    if not features:
+        return "采用模块化架构、规则引擎和结构化导出机制，支持业务联动、结果展示与资料沉淀。"
+    return "；".join(features)
+
+
+def build_feature_table_text(manifest: dict) -> str:
+    categories = infer_feature_categories(manifest)
+    features = [normalize_sentence(item) for item in manifest.get("technical_features", []) if normalize_sentence(item)]
+    if not features:
+        return f"{categories}；支持业务联动、结果展示和结构化导出。"
+    head = features[0]
+    if len(features) > 1:
+        return f"{categories}；{head}。"
+    return f"{categories}；{head}。"
+
+
+def collect_module_screenshots(module: dict) -> list[dict]:
+    screenshots: list[dict] = []
+    for item in module.get("screenshots", []) or []:
+        if isinstance(item, dict) and item.get("file"):
+            screenshots.append(item)
+    single = module.get("screenshot") or {}
+    if isinstance(single, dict) and single.get("file"):
+        screenshots.append(single)
+    deduped: list[dict] = []
+    seen: set[str] = set()
+    for shot in screenshots:
+        key = str(shot.get("file", "")).strip()
+        if key and key not in seen:
+            seen.add(key)
+            deduped.append(shot)
+    return deduped
+
+
 def detect_project_shape(project_root: Path) -> dict:
     return {
         "has_package_json": (project_root / "package.json").exists(),
@@ -138,25 +190,35 @@ def infer_entry_urls(project_root: Path) -> list[str]:
     return urls
 
 
-def build_install_steps(project_root: Path) -> tuple[list[str], str]:
+def build_install_steps(project_root: Path, manifest: dict) -> tuple[list[str], str]:
     shape = detect_project_shape(project_root)
     urls = infer_entry_urls(project_root)
+    architecture = str(manifest.get("architecture", ""))
+    is_desktop = "桌面" in architecture or ((project_root / "src" / "main" / "java").exists() and not shape["has_package_json"])
     steps = ["获取项目源代码后进入项目根目录。"]
 
     if shape["has_package_json"]:
         steps.append("执行 npm install 安装前端依赖。")
 
-    if shape["has_run_java_script"]:
+    if is_desktop and shape["has_run_java_script"]:
+        steps.append(r"执行 powershell -ExecutionPolicy Bypass -File .\scripts\run-java.ps1 启动桌面程序。")
+    elif is_desktop and shape["has_build_java_script"]:
+        steps.append(r"先执行 powershell -ExecutionPolicy Bypass -File .\scripts\build-java.ps1 编译源码，再运行桌面程序主入口。")
+    elif shape["has_run_java_script"]:
         steps.append(r"执行 powershell -ExecutionPolicy Bypass -File .\scripts\run-java.ps1 启动 Java 服务。")
     elif shape["has_java_server"]:
         steps.append(r"先执行 powershell -ExecutionPolicy Bypass -File .\scripts\build-java.ps1 编译源码，再按项目启动命令运行 Java 服务。")
 
-    if urls:
+    if is_desktop:
+        steps.append("程序启动后直接进入桌面主窗口，在左侧菜单与顶部操作区完成业务处理。")
+    elif urls:
         steps.append(f"启动完成后在浏览器中访问 {join_sentences(urls, ' 或 ')} 进入系统页面。")
     else:
         steps.append("启动完成后在浏览器中访问项目配置的本地地址进入系统页面。")
 
-    if shape["has_build_java_script"]:
+    if is_desktop and shape["has_build_java_script"]:
+        warning = r"如需单独校验桌面程序编译状态，可执行 powershell -ExecutionPolicy Bypass -File .\scripts\build-java.ps1 完成 Java 源码编译。"
+    elif shape["has_build_java_script"]:
         warning = r"如需单独校验后端编译状态，可执行 powershell -ExecutionPolicy Bypass -File .\scripts\build-java.ps1 完成 Java 源码编译。"
     else:
         warning = ""
@@ -210,9 +272,12 @@ def build_html(project_root: Path, manifest: dict, output_path: Path) -> None:
     version = manifest.get("version", "V1.0")
     env = manifest["environments"]
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    install_steps, install_note = build_install_steps(project_root)
+    install_steps, install_note = build_install_steps(project_root, manifest)
     export_intro = build_export_intro(manifest)
 
+    feature_categories = infer_feature_categories(manifest)
+    feature_description = build_feature_description(manifest)
+    feature_table_text = build_feature_table_text(manifest)
     env_rows = [
         ["开发该软件的硬件环境", env.get("dev_hardware", "")],
         ["运行的硬件环境", env.get("run_hardware", "")],
@@ -224,7 +289,7 @@ def build_html(project_root: Path, manifest: dict, output_path: Path) -> None:
         ["开发目的", manifest.get("purpose", "")],
         ["面向领域/行业", manifest.get("industry", "")],
         ["软件的主要功能", join_sentences(manifest.get("main_functions", []))],
-        ["软件的技术特点", join_sentences(manifest.get("technical_features", []))],
+        ["软件的技术特点", feature_table_text],
     ]
 
     operation_modules = []
@@ -232,17 +297,20 @@ def build_html(project_root: Path, manifest: dict, output_path: Path) -> None:
     modules = manifest.get("modules", [])
     for index, module in enumerate(modules, start=1):
         screenshot_html = ""
-        shot = module.get("screenshot") or {}
-        if shot.get("file"):
+        shot_blocks = []
+        for shot_index, shot in enumerate(collect_module_screenshots(module), start=1):
             shot_path = project_root / shot["file"]
             if shot_path.exists():
                 image_bytes = build_manual_image_bytes(shot_path)
-                screenshot_html = (
-                    f"<div class='figure figure--module'><img src='{data_uri_from_bytes(image_bytes)}' alt='{esc(shot.get('title', module['title']))}'>"
-                    f"<div class='figcaption'>图4-{index} {esc(shot.get('title', module['title']))}</div>"
+                title = shot.get("title", module["title"])
+                label = f"图4-{index}-{shot_index}" if shot_index > 1 else f"图4-{index}"
+                shot_blocks.append(
+                    f"<div class='figure figure--module'><img src='{data_uri_from_bytes(image_bytes)}' alt='{esc(title)}'>"
+                    f"<div class='figcaption'>{label} {esc(title)}</div>"
                     f"</div>"
                 )
-        steps_html = "".join(f"<li>{esc(step)}</li>" for step in module.get("steps", []))
+        screenshot_html = "".join(shot_blocks)
+        steps_html = "".join(f"<li>{esc(step if isinstance(step, str) else step.get('text', ''))}</li>" for step in module.get("steps", []))
         operation_modules.append(
             f"<section class='module'><h3>4.{index} {esc(module['title'])}</h3>"
             f"<div class='meta'>菜单：{esc(module.get('menu', ''))}　页面路径：{esc(module.get('route', ''))}</div>"
@@ -297,15 +365,13 @@ def build_html(project_root: Path, manifest: dict, output_path: Path) -> None:
     test_cases = manifest.get("tests", {}).get("cases", [])
     test_case_rows = [[f"TC-{index:02d}", case] for index, case in enumerate(test_cases, start=1)]
     maintenance_items = manifest.get("maintenance", {}).get("items", [])
-    maintenance_rows = [
-        [
-            item.get("title", ""),
-            item.get("target", ""),
-            item.get("method", ""),
-            item.get("verify", ""),
-        ]
+    maintenance_html = "".join(
+        f"<div class='note'><p><strong>{esc(item.get('title', '维护事项'))}</strong></p>"
+        f"<p><strong>对应位置：</strong>{esc(item.get('target', ''))}</p>"
+        f"<p><strong>处理方法：</strong>{esc(item.get('method', ''))}</p>"
+        f"<p><strong>完成后验证：</strong>{esc(item.get('verify', ''))}</p></div>"
         for item in maintenance_items
-    ]
+    )
 
     html_doc = f"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -344,12 +410,16 @@ def build_html(project_root: Path, manifest: dict, output_path: Path) -> None:
       <p><strong>系统定位：</strong>{esc(manifest.get("purpose", ""))}</p>
       <p><strong>面向用户群体：</strong>{esc(join_terms(manifest.get("user_groups", [])))}</p>
       <p><strong>总体架构：</strong>{esc(manifest.get("architecture", "前后端分离 B/S 架构，前端负责界面与交互，后端负责业务逻辑、接口与数据输出。"))}</p>
-      <p><strong>技术特点：</strong>{esc(join_sentences(manifest.get("technical_features", [])))}</p>
+    <p><strong>技术方向：</strong>{esc(feature_categories)}</p>
     </section>
 
     <section>
-      <h2>2. 系统运行环境要求</h2>
-      {html_table(["项目", "内容"], env_rows)}
+     <h2>2. 系统运行环境要求</h2>
+     {html_table(["项目", "内容"], env_rows)}
+     <h3>2.1 软件技术特点分类</h3>
+     <p><strong>{esc(feature_categories)}</strong></p>
+     <h3>2.2 软件技术特点说明</h3>
+     <p>{esc(feature_description)}</p>
     </section>
 
     <section>
@@ -388,10 +458,10 @@ def build_html(project_root: Path, manifest: dict, output_path: Path) -> None:
       {html_table(["编号", "测试内容"], test_case_rows)}
       <h3>8.2 系统维护指南</h3>
       <p>{esc(manifest.get("maintenance", {}).get("guide", ""))}</p>
-      {html_table(["维护事项", "对应位置", "处理方法", "完成后验证"], maintenance_rows)}
+      {maintenance_html}
     </section>
 
-    <footer>版权信息：{esc(system_name)} 软件著作权鉴定材料</footer>
+    <footer></footer>
   </div>
 </body>
 </html>"""
@@ -404,7 +474,7 @@ def fill_cell_text(cell, text: str, bold: bool = False, size: float = 12) -> Non
     run = paragraph.add_run(text)
     set_font(run, size, bold=bold)
     paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
-    cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+    cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.TOP
     add_border(cell)
 
 
@@ -440,6 +510,24 @@ def add_code(doc: Document, label: str, code: str) -> None:
     set_font(run, 10.5)
 
 
+def add_page_number_field(paragraph) -> None:
+    run = paragraph.add_run()
+    set_font(run, 10.5)
+    fld_begin = OxmlElement("w:fldChar")
+    fld_begin.set(qn("w:fldCharType"), "begin")
+    instr = OxmlElement("w:instrText")
+    instr.set(qn("xml:space"), "preserve")
+    instr.text = " PAGE "
+    fld_separate = OxmlElement("w:fldChar")
+    fld_separate.set(qn("w:fldCharType"), "separate")
+    fld_end = OxmlElement("w:fldChar")
+    fld_end.set(qn("w:fldCharType"), "end")
+    run._r.append(fld_begin)
+    run._r.append(instr)
+    run._r.append(fld_separate)
+    run._r.append(fld_end)
+
+
 def convert_docx_to_pdf(docx_path: Path, pdf_path: Path) -> bool:
     escaped_docx = str(docx_path).replace("'", "''")
     escaped_pdf = str(pdf_path).replace("'", "''")
@@ -469,7 +557,7 @@ def build_docx(project_root: Path, manifest: dict, output_path: Path) -> None:
     version = manifest.get("version", "V1.0")
     env = manifest["environments"]
     doc = Document()
-    install_steps, install_note = build_install_steps(project_root)
+    install_steps, install_note = build_install_steps(project_root, manifest)
     export_intro = build_export_intro(manifest)
     section = doc.sections[0]
     section.top_margin = Cm(2.4)
@@ -486,8 +574,11 @@ def build_docx(project_root: Path, manifest: dict, output_path: Path) -> None:
     add_heading(doc, 1, "1. 系统简介")
     add_body(doc, f"系统定位：{manifest.get('purpose', '')}")
     add_body(doc, f"面向用户群体：{join_terms(manifest.get('user_groups', []))}")
-    add_body(doc, f"总体架构：{manifest.get('architecture', '前后端分离 B/S 架构，前端负责界面与交互，后端负责业务逻辑、接口与数据输出。')}")
-    add_body(doc, f"技术特点：{join_sentences(manifest.get('technical_features', []))}")
+    add_body(doc, f"总体架构：{manifest.get('architecture', '采用桌面业务架构，界面层、规则层和导入导出层协同运行。')}")
+    feature_categories = infer_feature_categories(manifest)
+    feature_description = build_feature_description(manifest)
+    feature_table_text = build_feature_table_text(manifest)
+    add_body(doc, f"技术方向：{feature_categories}")
 
     add_heading(doc, 1, "2. 系统运行环境要求")
     env_rows = [
@@ -501,7 +592,7 @@ def build_docx(project_root: Path, manifest: dict, output_path: Path) -> None:
         ("开发目的", manifest.get("purpose", "")),
         ("面向领域/行业", manifest.get("industry", "")),
         ("软件的主要功能", join_sentences(manifest.get("main_functions", []))),
-        ("软件的技术特点", join_sentences(manifest.get("technical_features", []))),
+        ("软件的技术特点", feature_table_text),
     ]
     table = doc.add_table(rows=1, cols=2)
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
@@ -512,6 +603,11 @@ def build_docx(project_root: Path, manifest: dict, output_path: Path) -> None:
         row = table.add_row().cells
         fill_cell_text(row[0], left)
         fill_cell_text(row[1], right)
+
+    add_heading(doc, 2, "2.1 软件技术特点分类")
+    add_body(doc, feature_categories)
+    add_heading(doc, 2, "2.2 软件技术特点说明")
+    add_body(doc, feature_description)
 
     add_heading(doc, 1, "3. 系统安装与启动")
     for step in install_steps:
@@ -525,27 +621,17 @@ def build_docx(project_root: Path, manifest: dict, output_path: Path) -> None:
         add_heading(doc, 2, f"4.{index} {module['title']}")
         add_body(doc, f"菜单：{module.get('menu', '')}；页面路径：{module.get('route', '')}")
         for step_index, step in enumerate(module.get("steps", []), start=1):
-            add_body(doc, f"第{step_index}步：{step}")
-        shot = module.get("screenshot") or {}
-        if shot.get("file"):
+            step_text = step if isinstance(step, str) else step.get("text", "")
+            add_body(doc, f"第 {step_index} 步：{step_text}")
+        for shot_index, shot in enumerate(collect_module_screenshots(module), start=1):
             shot_path = project_root / shot["file"]
             if shot_path.exists():
-                doc.add_page_break()
-                shot_heading = doc.add_paragraph()
-                shot_heading.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                shot_run = shot_heading.add_run(f"4.{index}.1 \u6a21\u5757\u9ad8\u6e05\u622a\u56fe")
-                set_font(shot_run, 13, bold=True)
                 doc.add_picture(io.BytesIO(build_manual_image_bytes(shot_path)), width=Cm(17.0))
                 caption = doc.add_paragraph()
                 caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                run = caption.add_run(f"图4-{index} {shot.get('title', module['title'])}")
+                label = f"图4-{index}-{shot_index}" if shot_index > 1 else f"图4-{index}"
+                run = caption.add_run(f"{label} {shot.get('title', module['title'])}")
                 set_font(run, 10.5)
-                note = doc.add_paragraph()
-                note.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                note_run = note.add_run("\u672c\u9875\u4fdd\u7559\u6574\u5c4f\u754c\u9762\u622a\u56fe\uff0c\u4f9b\u5ba1\u67e5\u65f6\u653e\u5927\u67e5\u770b\u6a21\u5757\u5e03\u5c40\u4e0e\u5b57\u6bb5\u4fe1\u606f\u3002")
-                set_font(note_run, 10.5)
-                if index < len(modules):
-                    doc.add_page_break()
 
     add_heading(doc, 1, "5. 功能模块详解与对应主程序段")
     for index, module in enumerate(manifest.get("modules", []), start=1):
@@ -617,21 +703,18 @@ def build_docx(project_root: Path, manifest: dict, output_path: Path) -> None:
 
     add_heading(doc, 2, "8.2 系统维护指南")
     add_body(doc, manifest.get('maintenance', {}).get('guide', ''))
-    maintenance_table = doc.add_table(rows=1, cols=4)
-    for idx, title in enumerate(["维护事项", "对应位置", "处理方法", "完成后验证"]):
-        fill_cell_text(maintenance_table.rows[0].cells[idx], title, bold=True)
     maintenance_items = manifest.get("maintenance", {}).get("items", [])
     for item in maintenance_items:
-        row = maintenance_table.add_row().cells
-        fill_cell_text(row[0], item.get("title", ""))
-        fill_cell_text(row[1], item.get("target", ""))
-        fill_cell_text(row[2], item.get("method", ""))
-        fill_cell_text(row[3], item.get("verify", ""))
+        add_body(doc, f"维护事项：{item.get('title', '')}")
+        add_body(doc, f"对应位置：{item.get('target', '')}")
+        add_body(doc, f"处理方法：{item.get('method', '')}")
+        add_body(doc, f"完成后验证：{item.get('verify', '')}")
 
     footer = doc.sections[0].footer.paragraphs[0]
     footer.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = footer.add_run(f"版权信息：{system_name} 软件著作权鉴定材料")
-    set_font(run, 10.5)
+    footer_page = doc.sections[0].footer.add_paragraph()
+    footer_page.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    add_page_number_field(footer_page)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(output_path)
